@@ -42,12 +42,21 @@ ccflags-y += -DDSP_TRACE_INCLUDE_PATH=$(DSP_ROOT)/dsp
 LINUXINCLUDE += -I$(DSP_ROOT)/include/linux
 LINUXINCLUDE += -I$(DSP_ROOT)/include/uapi
 
-frpc-adsprpc-y := dsp/fastrpc.o	\
-			 dsp/fastrpc_rpmsg.o \
-
+# frpc-adsprpc from this techpack is DISABLED for senna.
+#
+# This driver derives from mainline drivers/misc/fastrpc.c: it creates
+# per-domain nodes (/dev/fastrpc-adsp) and uses the new ioctl ABI
+# (FASTRPC_IOCTL_INVOKE = _IOWR('R', 3, struct fastrpc_invoke)). Senna's
+# vendor blobs come from waipio 5.10 and speak the old protocol: they open
+# /dev/adsprpc-smd and issue _IOWR('R', 1, struct fastrpc_ioctl_invoke).
+# libadsprpc.so knows only the *-smd names, and audioadsprpcd fails with
+# "open_device_node failed for domain ID 0 (errno 2)".
+#
+# The QTI driver from the msm-kernel drivers/char/adsprpc.c
+# (CONFIG_MSM_ADSPRPC=m) is built instead; it has the same module name, so
+# the module load lists stay unchanged.
 cdsp-loader-y := dsp/cdsp-loader.o
 
-obj-m := frpc-adsprpc.o # cdsp-loader.o
+obj-m := cdsp-loader.o
 
-BOARD_VENDOR_KERNEL_MODULES += $(KERNEL_MODULES_OUT)/frpc-adsprpc.ko
-#BOARD_VENDOR_KERNEL_MODULES += $(KERNEL_MODULES_OUT)/cdsp-loader.ko
+BOARD_VENDOR_KERNEL_MODULES += $(KERNEL_MODULES_OUT)/cdsp-loader.ko
