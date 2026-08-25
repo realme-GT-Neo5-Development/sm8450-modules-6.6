@@ -7718,11 +7718,19 @@ static void ipa3_register_panic_hdlr(void)
 		&ipa3_panic_blk);
 }
 
+/*
+ * The only caller, ipa3_deepsleep_suspend(), is under
+ * "#if IS_ENABLED(CONFIG_DEEPSLEEP) || IS_ENABLED(CONFIG_HIBERNATION)".
+ * Without the same condition the function is unused and
+ * -Werror=unused-function breaks the build.
+ */
+#if IS_ENABLED(CONFIG_DEEPSLEEP) || IS_ENABLED(CONFIG_HIBERNATION)
 static void ipa3_unregister_panic_hdlr(void)
 {
 	atomic_notifier_chain_unregister(&panic_notifier_list,
 		&ipa3_panic_blk);
 }
+#endif
 
 static void ipa3_uc_is_loaded(void)
 {

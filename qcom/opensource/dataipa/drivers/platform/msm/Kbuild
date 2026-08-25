@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: GPL-2.0-only
-DATAIPADRVTOP = $(srctree)/$(src)
+DATAIPADRVTOP = $(src)
 
 #MSMs - GKI
 ifeq ($(CONFIG_ARCH_LAHAINA), y)
