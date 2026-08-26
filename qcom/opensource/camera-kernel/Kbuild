@@ -67,7 +67,27 @@ LINUXINCLUDE +=                                 \
 	-I$(CAMERA_KERNEL_ROOT)/include/uapi/camera \
 	-I$(CAMERA_KERNEL_ROOT)/
 # Optional include directories
-ccflags-$(CONFIG_MSM_GLOBAL_SYNX) += -I$(KERNEL_ROOT)/drivers/media/platform/msm/synx
+#
+# On 5.10 synx was part of the kernel and lived under this path. On 6.6 it is
+# a separate techpack, so the include path must point there. cam_sync.c only
+# needs synx_api.h from it, and the bind API is identical in both versions
+# (bind_operations, synx_register_params, SYNX_TYPE_CSL), so the
+# CONFIG_MSM_GLOBAL_SYNX block builds and works against synx v2.
+#
+# Without this the whole `#if IS_REACHABLE(CONFIG_MSM_GLOBAL_SYNX)` block in
+# cam_sync.c is compiled out, synx_register_ops() is never called and every
+# SYNX_BIND from CamX fails with "invalid bind ops", so the EVA node never
+# receives the camera fence.
+# CONFIG_MSM_GLOBAL_SYNX=m on the make command line only sets a Makefile
+# variable (driving ccflags-$(...)); it does NOT define the preprocessor
+# macro, so IS_REACHABLE() in C stays false. The macro has to be passed
+# explicitly, as Qualcomm does for TARGET_SYNX_ENABLE. The _MODULE variant is
+# correct since both synx and camera are modules, so
+# IS_REACHABLE = IS_MODULE(...) && MODULE.
+SYNXVENDORDIR := $(CAMERA_KERNEL_ROOT)/../synx-kernel
+ccflags-$(CONFIG_MSM_GLOBAL_SYNX) += -I$(SYNXVENDORDIR)/msm/synx
+ccflags-$(CONFIG_MSM_GLOBAL_SYNX) += -I$(SYNXVENDORDIR)/include/uapi/synx/media
+ccflags-$(CONFIG_MSM_GLOBAL_SYNX) += -DCONFIG_MSM_GLOBAL_SYNX_MODULE=1
 
 # After creating lists, add content of 'ccflags-m' variable to 'ccflags-y' one.
 ccflags-y += ${ccflags-m}
@@ -241,6 +261,22 @@ camera-$(CONFIG_SPECTRA_SENSOR) += \
 	drivers/cam_sensor_module/cam_flash/cam_flash_dev.o \
 	drivers/cam_sensor_module/cam_flash/cam_flash_core.o \
 	drivers/cam_sensor_module/cam_flash/cam_flash_soc.o
+
+camera-$(CONFIG_SPECTRA_OPLUS) += \
+	drivers/oplus/cam_sensor_module/cam_sensor/oplus_cam_sensor_core.o \
+	drivers/oplus/cam_sensor_module/cam_eeprom/oplus_cam_eeprom_dev.o \
+	drivers/oplus/cam_sensor_module/cam_eeprom/oplus_cam_eeprom_soc.o \
+	drivers/oplus/cam_sensor_module/cam_eeprom/oplus_cam_eeprom_core.o \
+	drivers/oplus/cam_sensor_module/cam_flash/oplus_cam_flash_dev.o \
+	drivers/oplus/cam_sensor_module/cam_ois/oplus_cam_ois_soc.o \
+	drivers/oplus/cam_sensor_module/cam_ois/onsemi_fw/fw_download_interface.o \
+	drivers/oplus/cam_sensor_module/cam_ois/onsemi_fw/LC898124/DownloadCmd.o \
+	drivers/oplus/cam_sensor_module/cam_ois/onsemi_fw/LC898129/PhoneUpdate.o \
+	drivers/oplus/cam_sensor_module/cam_ois/onsemi_fw/LC898128/PhoneUpdate128.o \
+	drivers/oplus/cam_sensor_module/cam_ois/onsemi_fw/BU24721/bu24721_fw.o \
+	drivers/oplus/cam_sensor_module/cam_ois/onsemi_fw/SEM1217S/sem1217_fw.o \
+	drivers/oplus/cam_sensor_module/cam_actuator/oplus_cam_actuator_core.o \
+	drivers/oplus/cam_sensor_module/cam_actuator/oplus_cam_actuator_dev.o
 
 camera-$(CONFIG_SPECTRA_CUSTOM) += \
 	drivers/cam_cust/cam_custom_hw_mgr/cam_custom_hw1/cam_custom_sub_mod_soc.o \

@@ -26,6 +26,13 @@
 #include "cam_cdm_util.h"
 #include "cam_common_util.h"
 #include "cam_subdev.h"
+#ifdef OPLUS_FEATURE_CAMERA_COMMON
+#include <linux/sched.h>
+#include <linux/signal.h>
+#include <linux/workqueue.h>
+#include <linux/jiffies.h>
+#include <linux/atomic.h>
+#endif
 
 /* CSIPHY TPG VC/DT values */
 #define CAM_IFE_CPHY_TPG_VC_VAL                         0x0
@@ -35,7 +42,11 @@
 #define CAM_IFE_CSID_TIMEOUT_SLEEP_US                  1000
 #define CAM_IFE_CSID_TIMEOUT_ALL_US                    100000
 
+#ifdef OPLUS_FEATURE_CAMERA_COMMON
+#define CAM_IFE_CSID_RESET_TIMEOUT_MS                  300
+#else
 #define CAM_IFE_CSID_RESET_TIMEOUT_MS                  100
+#endif
 
 /*
  * Constant Factors needed to change QTimer ticks to nanoseconds
@@ -48,6 +59,18 @@
 
 /* Max number of sof irq's triggered in case of SOF freeze */
 #define CAM_CSID_IRQ_SOF_DEBUG_CNT_MAX 12
+
+#ifdef OPLUS_FEATURE_CAMERA_COMMON
+#define CAM_CPHY_ERROR_TIMEOUT_MS                      4000
+#define CAM_CPHY_CHECK_DURATION_MS                     3000
+#define CAM_CPHY_CLEAR_COUNT_DURATION_MS               (CAM_CPHY_ERROR_TIMEOUT_MS + CAM_CPHY_CHECK_DURATION_MS)
+
+extern pid_t camera_provider_pid;
+extern bool enable_cphy_crash;
+atomic64_t cphy_first_time = ATOMIC64_INIT(0);
+#endif
+
+#define CAM_CSID_IRQ_CTRL_NAME_LEN                     10
 
 static void cam_ife_csid_ver2_print_debug_reg_status(
 	struct cam_ife_csid_ver2_hw *csid_hw,
@@ -974,7 +997,9 @@ static int cam_ife_csid_ver2_rx_err_bottom_half(
 	uint32_t                                    long_pkt_ftr_val;
 	uint32_t                                    total_crc;
 	uint32_t                                    data_idx;
-
+#ifdef OPLUS_FEATURE_CAMERA_COMMON
+	bool                                        cphy_error = false;
+#endif
 	if (!handler_priv || !evt_payload_priv) {
 		CAM_ERR(CAM_ISP, "Invalid params");
 		return -EINVAL;
@@ -1083,6 +1108,9 @@ static int cam_ife_csid_ver2_rx_err_bottom_half(
 					total_crc, long_pkt_ftr_val & 0xffff,
 					long_pkt_ftr_val >> 16, val >> 22,
 					(val >> 16) & 0x3F, val & 0xFFFF);
+#ifdef OPLUS_FEATURE_CAMERA_COMMON
+				cphy_error = true;
+#endif
 			} else {
 				CAM_ERR_BUF(CAM_ISP, log_buf,
 					CAM_IFE_CSID_LOG_BUF_LEN, &len,
@@ -1809,6 +1837,13 @@ static int cam_ife_csid_ver2_rdi_bottom_half(
 		}
 		csid_hw->event_cb(csid_hw->token, CAM_ISP_HW_EVENT_EPOCH, (void *)&evt_info);
 	}
+#ifdef OPLUS_FEATURE_CAMERA_COMMON//lanhe todo
+	if (csid_hw->flags.use_rdi_sof &&
+		(irq_status_rdi & IFE_CSID_VER2_PATH_INFO_INPUT_SOF))
+		csid_hw->event_cb(csid_hw->token,
+			CAM_ISP_HW_EVENT_SOF,
+			(void *)&evt_info);
+#endif
 end:
 	cam_ife_csid_ver2_put_evt_payload(csid_hw, &payload,
 		&csid_hw->path_free_payload_list, &csid_hw->path_payload_lock);
@@ -2703,6 +2738,10 @@ int cam_ife_csid_ver2_reserve(void *hw_priv,
 	path_cfg->handle_camif_irq = reserve->handle_camif_irq;
 	csid_hw->flags.offline_mode = reserve->is_offline;
 	reserve->need_top_cfg = csid_reg->need_top_cfg;
+#ifdef OPLUS_FEATURE_CAMERA_COMMON
+	//lanhe add
+	csid_hw->flags.use_rdi_sof = reserve->use_rdi_sof;
+#endif
 	csid_hw->secure_mode = reserve->secure_mode;
 
 	CAM_DBG(CAM_ISP, "CSID[%u] Secure_mode %d Resource[id: %d name:%s] state %d cid %d",
@@ -2799,6 +2838,11 @@ int cam_ife_csid_ver2_release(void *hw_priv,
 			sizeof(struct cam_ife_csid_debug_info));
 		csid_hw->token = NULL;
 	}
+
+#ifdef OPLUS_FEATURE_CAMERA_COMMON
+	//lanhe add
+	csid_hw->flags.use_rdi_sof = false;
+#endif
 
 	csid_hw->secure_mode = 0;
 	res->res_state = CAM_ISP_RESOURCE_STATE_AVAILABLE;
@@ -3315,7 +3359,18 @@ static int cam_ife_csid_ver2_program_rdi_path(
 		val |= path_reg->rup_irq_mask;
 		path_cfg->handle_camif_irq = true;
 	}
-
+#ifdef OPLUS_FEATURE_CAMERA_COMMON
+	//lanhe add
+	if(csid_hw->flags.use_rdi_sof &&
+		(res->res_id == CAM_IFE_PIX_PATH_RES_RDI_2))
+	{
+		path_cfg->handle_camif_irq = true;
+		val |= IFE_CSID_VER2_PATH_INFO_INPUT_SOF;
+		CAM_DBG(CAM_ISP,
+			"Enable RDI SOF irq for res: %s, use_rdi_sof:%d",
+			res->res_name, csid_hw->flags.use_rdi_sof);
+	}
+#endif
 	/* Enable secondary events dictated by HW mgr for RDI paths */
 	if (path_cfg->sec_evt_config.en_secondary_evt) {
 		if (path_cfg->sec_evt_config.evt_type & CAM_IFE_CSID_EVT_SOF)

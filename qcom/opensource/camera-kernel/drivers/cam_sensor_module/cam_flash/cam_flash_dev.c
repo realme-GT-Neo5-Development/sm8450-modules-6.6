@@ -11,6 +11,9 @@
 #include "cam_flash_core.h"
 #include "cam_common_util.h"
 #include "camera_main.h"
+#ifdef OPLUS_FEATURE_CAMERA_COMMON
+#include "oplus_cam_flash_dev.h"
+#endif
 
 static int32_t cam_flash_driver_cmd(struct cam_flash_ctrl *fctrl,
 		void *arg, struct cam_flash_private_soc *soc_private)
@@ -167,7 +170,16 @@ static int32_t cam_flash_driver_cmd(struct cam_flash_ctrl *fctrl,
 			goto release_mutex;
 		}
 		fctrl->apply_streamoff = false;
-		fctrl->flash_state = CAM_FLASH_STATE_START;
+		/*
+		 * Do NOT set CAM_FLASH_STATE_START here. The LineageOS 6.6 drop
+		 * added that line; neither Qualcomm (the OnePlus sm8750 (sun)
+		 * 6.6 release) nor 5.10 has it. Senna's (5.10) camera HAL calls
+		 * CAM_QUERY_CAP (V1) before CAM_ACQUIRE_DEV, and acquire requires
+		 * the INIT state, so every flash acquire failed with
+		 * "Prev state: 3" / -EINVAL and CamX aborted in
+		 * Flash::Initialize. Newer HALs use CAM_QUERY_CAP_V2, which does
+		 * not change the state.
+		 */
 		break;
 	}
 
@@ -587,6 +599,9 @@ static int cam_flash_component_bind(struct device *dev,
 	mutex_init(&(fctrl->flash_mutex));
 
 	fctrl->flash_state = CAM_FLASH_STATE_INIT;
+#ifdef OPLUS_FEATURE_CAMERA_COMMON
+       oplus_cam_flash_proc_init(fctrl, pdev);
+#endif
 	CAM_DBG(CAM_FLASH, "Component bound successfully");
 	return rc;
 
