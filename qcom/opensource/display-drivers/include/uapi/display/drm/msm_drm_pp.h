@@ -495,7 +495,11 @@ struct drm_msm_ad4_roi_cfg {
 #define LTM_DATA_SIZE_3 33
 #define LTM_BUFFER_SIZE 5
 #define LTM_GUARD_BYTES 255
-#define LTM_BLOCK_SIZE 4
+/*
+ * ABI: kept at 2 (the 6.6 drop raised it to 4) to match the 5.10 userspace
+ * ABI; sizes init_h[]/init_v[] in drm_msm_ltm_stats_data.
+ */
+#define LTM_BLOCK_SIZE 2
 
 #define LTM_STATS_SAT (1 << 1)
 #define LTM_STATS_MERGE_SAT (1 << 2)

@@ -73,9 +73,42 @@ extern "C" {
  */
 #define DRM_FORMAT_MOD_QCOM_ALPHA_SWAP	fourcc_mod_code(QCOM, 0x10)
 
+/*
+ * @DRM_FORMAT_MOD_QCOM_FSC_TILE:	Refers to a tile variant of the
+ *					planar format. Implementation may be
+ *					platform and base-format specific.
+ *
+ * Restored from the msm-5.10 kernel to match the 5.10 userspace ABI
+ * (gralloc/composer use this modifier); dropped in the 6.6 QC release.
+ */
+#define DRM_FORMAT_MOD_QCOM_FSC_TILE       fourcc_mod_code(QCOM, 0x20)
+
 #define DRM_FORMAT_MOD_QCOM_CAC_R          fourcc_mod_code(QCOM, 0x40)
 #define DRM_FORMAT_MOD_QCOM_CAC_G          fourcc_mod_code(QCOM, 0x80)
 #define DRM_FORMAT_MOD_QCOM_CAC_B          fourcc_mod_code(QCOM, 0x100)
+
+/**
+ * Sys Cache types for "syscache_type" property
+ *
+ * @SDE_SYSCACHE_LLCC_DISP:	Syscache type is default, LLCC_DISP.
+ * @SDE_SYSCACHE_LLCC_DISP_LEFT:	Syscache type is display left.
+ * @SDE_SYSCACHE_LLCC_DISP_RIGHT:	Syscache type is display right.
+ *
+ * Restored from 5.10 (sde_drm.h:117).
+ */
+#define SDE_SYSCACHE_LLCC_DISP		0
+#define SDE_SYSCACHE_LLCC_DISP_LEFT	1
+#define SDE_SYSCACHE_LLCC_DISP_RIGHT	2
+
+/**
+ * buffer modes for "buffer_mode" plane property
+ * @SDE_INDEPENDENT_BUFFER_MODE:Plane buffers are independent.
+ * @SDE_SINGLE_BUFFER_MODE:	All planes are on same buffer, same input fence.
+ *
+ * Restored from 5.10 (sde_drm.h:126).
+ */
+#define SDE_INDEPENDENT_BUFFER_MODE	0
+#define SDE_SINGLE_BUFFER_MODE		1
 
 /**
  * Blend operations for "blend_op" property
@@ -361,13 +394,11 @@ struct sde_drm_cac {
  * @pre_downscale_x_1  Pre-downscale ratio, x-direction, plane 1(UV)
  * @pre_downscale_y_0  Pre-downscale ratio, y-direction, plane 0(Y/RGB)
  * @pre_downscale_y_1  Pre-downscale ratio, y-direction, plane 1(UV)
- * @de_lpf_flags:      Detail enhancer lpf blned configuration flags
- * @de_lpf_h:          Detail enhancer lpf blend high
- * @de_lpf_l:          Detail enhancer lpf blend low
- * @de_lpf_m:          Detail enhancer lpf blend medium
- * @dir45_en:          45/-45 degree direction filtering enable
- * @cor_en:            corner enhancer enable
- * @cac_cfg:           CAC QSEED config
+ *
+ * ABI: newer QC drops append de_lpf_*, dir45_en, cor_en and cac_cfg here.
+ * The layout must match the 5.10 userspace ABI: the composer HAL allocates
+ * the buffer without those fields, and _sde_plane_set_scaler_v2() does
+ * copy_from_user(sizeof(scale_v2)), which would read past its end.
  */
 struct sde_drm_scaler_v2 {
 	/*
@@ -433,19 +464,16 @@ struct sde_drm_scaler_v2 {
 	__u32 pre_downscale_x_1;
 	__u32 pre_downscale_y_0;
 	__u32 pre_downscale_y_1;
-
-	__u32 de_lpf_flags;
-	__u32 de_lpf_h;
-	__u32 de_lpf_l;
-	__u32 de_lpf_m;
-	__u32 dir45_en;
-	__u32 cor_en;
-
-	struct sde_drm_cac cac_cfg;
 };
 
-/* Number of dest scalers supported */
-#define SDE_MAX_DS_COUNT 4
+/*
+ * Number of dest scalers supported.
+ *
+ * ABI: kept at 2 (the 6.6 drop raised it to 4) to match the 5.10 userspace
+ * ABI. It sizes ds_cfg[] in the ioctl struct sde_drm_dest_scaler_data, which
+ * the composer HAL allocates from its own header. Waipio has 2 DS blocks.
+ */
+#define SDE_MAX_DS_COUNT 2
 
 /*
  * Destination scaler flag config
@@ -643,7 +671,11 @@ struct sde_drm_ubwc_stats_data {
  */
 #define SDE_FRAME_DATA_BUFFER_MAX	0x3
 #define SDE_FRAME_DATA_GUARD_BYTES	0xFF
-#define SDE_FRAME_DATA_MAX_PLANES	0x14
+/*
+ * ABI: kept at 0x10 (the 6.6 drop raised it to 0x14) to match the 5.10
+ * userspace ABI; sizes plane_frame_data[] in sde_drm_frame_data_packet.
+ */
+#define SDE_FRAME_DATA_MAX_PLANES	0x10
 
 /**
  * struct sde_drm_frame_data_buffers_ctrl - control frame data buffers
