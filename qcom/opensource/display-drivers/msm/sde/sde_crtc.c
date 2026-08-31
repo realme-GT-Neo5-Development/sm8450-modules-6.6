@@ -40,6 +40,11 @@
 #include "sde_hw_ctl.h"
 #include "sde_hw_dspp.h"
 #include "sde_crtc.h"
+
+#ifdef OPLUS_FEATURE_DISPLAY_ONSCREENFINGERPRINT
+#include "../oplus/oplus_onscreenfingerprint.h"
+extern void oplus_sde_cp_crtc_pcc_change(struct drm_crtc *crtc_drm);
+#endif /* OPLUS_FEATURE_DISPLAY_ONSCREENFINGERPRINT */
 #include "sde_plane.h"
 #include "sde_hw_util.h"
 #include "sde_hw_catalog.h"
@@ -144,6 +149,12 @@ static void sde_crtc_install_noise_layer_properties(struct sde_crtc *sde_crtc,
 		struct sde_mdss_cfg *catalog, struct sde_kms_info *info);
 static void sde_cp_crtc_apply_noise(struct drm_crtc *crtc,
 		struct drm_crtc_state *state);
+#if defined(CONFIG_PXLW_IRIS)
+int iris_backlight_update;
+#endif
+#if defined(CONFIG_PXLW_IRIS) || defined(CONFIG_PXLW_SOFT_IRIS)
+int iris_backlight_update;
+#endif
 
 static inline struct sde_kms *_sde_crtc_get_kms(struct drm_crtc *crtc)
 {
@@ -4306,6 +4317,20 @@ static void _sde_crtc_atomic_begin(struct drm_crtc *crtc,
 			crtc == splash_display->encoder->crtc)
 			cont_splash_enabled = true;
 	}
+
+#ifdef OPLUS_FEATURE_DISPLAY_ONSCREENFINGERPRINT
+	/*
+	 * After a fingerprint HBM state change, force colour correction to be
+	 * reprogrammed, otherwise it stays bypassed after HBM ends. Must come
+	 * before sde_cp_crtc_apply_properties(), which programs the dirty list.
+	 * From the OnePlus sm8750 (sun) 6.6 release.
+	 */
+	if (oplus_ofp_is_supported()) {
+		if (oplus_ofp_need_pcc_change(sde_crtc)) {
+			oplus_sde_cp_crtc_pcc_change(crtc);
+		}
+	}
+#endif /* OPLUS_FEATURE_DISPLAY_ONSCREENFINGERPRINT */
 
 	if (sde_kms_is_cp_operation_allowed(sde_kms))
 		sde_cp_crtc_apply_properties(crtc);

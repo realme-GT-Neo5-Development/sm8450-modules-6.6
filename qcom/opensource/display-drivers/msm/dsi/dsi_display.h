@@ -22,6 +22,10 @@
 #include "dsi_phy.h"
 #include "dsi_panel.h"
 
+#ifdef OPLUS_FEATURE_DISPLAY
+#include "../oplus/oplus_dsi_support.h"
+#endif /* OPLUS_FEATURE_DISPLAY */
+
 #define MAX_DSI_CTRLS_PER_DISPLAY             2
 #define DSI_CLIENT_NAME_SIZE		20
 #define MAX_CMDLINE_PARAM_LEN	 512
@@ -301,6 +305,26 @@ struct dsi_display {
 	struct dsi_panel_cmd_set cmd_set;
 
 	bool enabled;
+
+#if defined(CONFIG_PXLW_IRIS)
+	/*
+	 * Pixelworks fields from the msm-5.10 kernel. dsi_iris5_extended.c keeps
+	 * the offset, count and packet type here between debugfs calls when
+	 * reading Iris registers.
+	 */
+	u32 off;
+	u32 cnt;
+	u8 cmd_data_type;
+#endif
+#ifdef OPLUS_FEATURE_DISPLAY
+	/* save qsync info, then restore qsync status after panel enable*/
+	bool need_qsync_restore;
+	/* force close qysnc window when qsync mode is on before panel enable */
+	bool force_qsync_mode_off;
+	uint32_t current_qsync_mode;
+	uint32_t current_qsync_dynamic_min_fps;
+	struct completion switch_te_gate;
+#endif /* OPLUS_FEATURE_DISPLAY */
 };
 
 int dsi_display_dev_probe(struct platform_device *pdev);
@@ -776,6 +800,53 @@ enum dsi_pixel_format dsi_display_get_dst_format(
  * Return: Zero on Success
  */
 int dsi_display_cont_splash_config(void *display);
+
+#ifdef OPLUS_FEATURE_DISPLAY
+int dsi_display_override_dma_cmd_trig(struct dsi_display *display,
+		enum dsi_trigger_type type);
+
+struct dsi_display *get_main_display(void);
+
+struct dsi_display *get_sec_display(void);
+
+/* Add for implement panel register read */
+int dsi_host_alloc_cmd_tx_buffer(struct dsi_display *display);
+int dsi_display_cmd_engine_enable(struct dsi_display *display);
+int dsi_display_cmd_engine_disable(struct dsi_display *display);
+
+/**
+ * oplus_panel_event_data_notifier_trigger() - oplus event notification with data
+ * @panel:                         Display panel
+ * @notif_type:                    Type of notifier
+ * @data:                          Data to be notified
+ * @early_trigger:                 Whether support early trigger
+ * Return: Zero on Success
+ */
+int oplus_panel_event_data_notifier_trigger(struct dsi_panel *panel,
+		enum panel_event_notification_type notif_type,
+		u32 data,
+		bool early_trigger);
+
+/**
+ * oplus_event_data_notifier_trigger() - oplus event notification with data
+ * @notif_type:                    Type of notifier
+ * @data:                          Data to be notified
+ * @early_trigger:                 Whether support early trigger
+ * Return: Zero on Success
+ */
+int oplus_event_data_notifier_trigger(
+		enum panel_event_notification_type notif_type,
+		u32 data,
+		bool early_trigger);
+
+/**
+ * oplus_panel_backlight_notifier() - oplus panel backlight notifier
+ * @panel:  Display panel
+ * @bl_lvl: Backlight level
+ * Return: Zero on Success
+ */
+int oplus_panel_backlight_notifier(struct dsi_panel *panel, u32 bl_lvl);
+#endif /* OPLUS_FEATURE_DISPLAY */
 
 /**
  * dsi_display_cont_splash_res_disable() - Disable resource votes added in probe

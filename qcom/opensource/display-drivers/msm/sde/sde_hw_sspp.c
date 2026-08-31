@@ -215,6 +215,18 @@ static inline int _sspp_subblk_offset(struct sde_hw_pipe *ctx,
 	return rc;
 }
 
+#if defined(CONFIG_PXLW_IRIS)
+/*
+ * Wrapper for the Pixelworks layer, as in the msm-5.10 kernel:
+ * _sspp_subblk_offset() is static inline, but msm/iris calls it from
+ * outside this file.
+ */
+int iris_sspp_subblk_offset(struct sde_hw_pipe *ctx, int s_id, u32 *idx)
+{
+	return _sspp_subblk_offset(ctx, s_id, idx);
+}
+#endif
+
 static void sde_hw_sspp_update_multirect(struct sde_hw_pipe *ctx,
 		bool enable,
 		enum sde_sspp_multirect_index index,

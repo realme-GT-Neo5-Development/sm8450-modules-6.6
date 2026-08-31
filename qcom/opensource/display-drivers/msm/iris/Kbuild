@@ -1,0 +1,7 @@
+# SPDX-License-Identifier: GPL-2.0-only
+
+# senna uses Iris5. The vendor build selected the variant through
+# OPLUS_VND_ENV_PW_X5_COMPATIBLE from the Android build system; it is not
+# available here (and when unset would pick iris7), so select iris5 explicitly.
+ccflags-y += -I$(PWATOP)/iris5/
+include $(PWATOP)/iris5/Kbuild

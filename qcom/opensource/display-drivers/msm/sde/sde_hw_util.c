@@ -115,8 +115,6 @@ void sde_set_scaler_v2(struct sde_hw_scaler3_cfg *cfg,
 
 	cfg->enable = scale_v2->enable;
 	cfg->dir_en = scale_v2->dir_en;
-	cfg->dir45_en = scale_v2->dir45_en;
-	cfg->cor_en = scale_v2->cor_en;
 
 	for (i = 0; i < SDE_MAX_PLANES; i++) {
 		cfg->init_phase_x[i] = scale_v2->init_phase_x[i];
@@ -158,10 +156,6 @@ void sde_set_scaler_v2(struct sde_hw_scaler3_cfg *cfg,
 	cfg->de.thr_low = scale_v2->de.thr_low;
 	cfg->de.thr_high = scale_v2->de.thr_high;
 	cfg->de.blend = scale_v2->de_blend;
-	cfg->de_lpf_flags = scale_v2->de_lpf_flags;
-	cfg->de_lpf_h = scale_v2->de_lpf_h;
-	cfg->de_lpf_l = scale_v2->de_lpf_l;
-	cfg->de_lpf_m = scale_v2->de_lpf_m;
 
 	for (i = 0; i < SDE_MAX_DE_CURVES; i++) {
 		cfg->de.adjust_a[i] = scale_v2->de.adjust_a[i];

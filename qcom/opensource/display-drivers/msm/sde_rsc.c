@@ -988,6 +988,7 @@ int sde_rsc_client_state_update(struct sde_rsc_client *caller_client,
 	rsc->update_tcs_content = true;
 
 clk_disable:
+
 	if (rsc->current_state == SDE_RSC_IDLE_STATE)
 		sde_rsc_resource_disable(rsc);
 end:

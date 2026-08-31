@@ -89,6 +89,14 @@ LINUX_INC +=	-I$(DISPLAY_ROOT) \
 	-I$(DISPLAY_ROOT)/../synx-kernel/msm/synx \
 	-I$(DISPLAY_ROOT)/include/uapi/display \
 
+# PXLW: the Pixelworks Iris driver lives in msm/iris. Its Kbuild selects the
+# variant (iris5 on senna); the per-SoC compat file is dsi_iris_cmpt_8450.o
+# under CONFIG_ARCH_WAIPIO.
+ifeq (${CONFIG_PXLW_IRIS},y)
+PWATOP=$(DISPLAY_ROOT)/msm/iris
+LINUX_INC += -I$(PWATOP)/
+endif
+
 CDEFINES +=	-DANI_LITTLE_BYTE_ENDIAN \
 	-DANI_LITTLE_BIT_ENDIAN \
 	-DDOT11F_LITTLE_ENDIAN_HOST \
@@ -264,6 +272,9 @@ msm_drm-$(CONFIG_DRM_MSM_DSI) += dsi/dsi_phy.o \
 				 dsi/dsi_panel.o \
 				 dsi/dsi_clk_manager.o \
 				 dsi/dsi_display_test.o
+ifeq (${CONFIG_PXLW_IRIS},y)
+include $(PWATOP)/Kbuild
+endif
 
 msm_drm-$(CONFIG_DSI_PARSER) += dsi/dsi_parser.o
 
@@ -277,4 +288,25 @@ msm_drm-$(CONFIG_DRM_MSM) += msm_atomic.o \
 			     msm_gem_vma.o \
 			     msm_smmu.o \
 			     msm_prop.o
+
+# FORWARDPORT: OPlus display layer, from LineageOS sm8450 5.10. Provides
+# /sys/kernel/oplus_display/{panel_serial_number,hbm,nit_brightness}, which
+# the fingerprint HAL requires.
+msm_drm-$(CONFIG_DRM_OPLUS) += ../oplus/oplus_dsi_support.o \
+	../oplus/oplus_display_private_api.o \
+	../oplus/oplus_dc_diming.o \
+	../oplus/oplus_display_temp_compensation.o \
+	../oplus/oplus_onscreenfingerprint.o \
+	../oplus/oplus_ffl.o \
+	../oplus/oplus_display_panel.o \
+	../oplus/oplus_display_panel_power.o \
+	../oplus/oplus_display_panel_seed.o \
+	../oplus/oplus_display_panel_common.o \
+	../oplus/oplus_display_esd.o \
+	../oplus/oplus_bl.o \
+	../oplus/oplus_display_panel_feature.o
+
+msm_drm-$(CONFIG_DRM_OPLUS) += ../oplus/oplus_adfr.o
+
+msm_drm-$(CONFIG_DRM_OPLUS_NOTIFY) += ../oplus/oplus_notify.o
 

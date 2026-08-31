@@ -13,11 +13,18 @@
 #include <video/mipi_display.h>
 
 #include "dsi_panel.h"
+
+#ifdef OPLUS_FEATURE_DISPLAY_ONSCREENFINGERPRINT
+#include "../oplus/oplus_onscreenfingerprint.h"
+#endif /* OPLUS_FEATURE_DISPLAY_ONSCREENFINGERPRINT */
 #include "dsi_ctrl_hw.h"
 #include "dsi_parser.h"
 #include "sde_dbg.h"
 #include "sde_dsc_helper.h"
 #include "sde_vdc_helper.h"
+#if defined(CONFIG_PXLW_IRIS)
+#include "dsi_iris_api.h"
+#endif
 
 /**
  * topology is currently defined by a set of following 3 values:
@@ -120,6 +127,13 @@ static int dsi_panel_gpio_request(struct dsi_panel *panel)
 		rc = gpio_request(r_config->reset_gpio, "reset_gpio");
 		if (rc) {
 			DSI_ERR("request for reset_gpio failed, rc=%d\n", rc);
+#if defined(CONFIG_PXLW_IRIS)
+			if (iris_is_chip_supported()) {
+				if (!strcmp(panel->type, "primary"))
+					goto error;
+				rc = 0;
+			} else
+#endif
 			goto error;
 		}
 	}
@@ -260,6 +274,14 @@ static int dsi_panel_reset(struct dsi_panel *panel)
 	struct dsi_panel_reset_config *r_config = &panel->reset_config;
 	int i;
 
+#if defined(CONFIG_PXLW_IRIS)
+	/* Reset the Iris chip before the panel (as in the msm-5.10 kernel). */
+	if (iris_is_dual_supported() && panel->is_secondary)
+		return rc;
+
+	iris_reset();
+#endif
+
 	if (!gpio_is_valid(r_config->reset_gpio))
 		goto skip_reset_gpio;
 
@@ -369,6 +391,18 @@ static int dsi_panel_power_on(struct dsi_panel *panel)
 		goto error_disable_vregs;
 	}
 
+#if defined(CONFIG_PXLW_IRIS)
+	/* Iris pinctrl (as in the msm-5.10 kernel). */
+	if (iris_is_chip_supported()) {
+		rc = iris_set_pinctrl_state(true);
+		if (rc) {
+			DSI_ERR("[%s] failed to set iris pinctrl, rc=%d\n",
+				panel->name, rc);
+			goto error_disable_vregs;
+		}
+	}
+#endif
+
 	rc = dsi_panel_reset(panel);
 	if (rc) {
 		DSI_ERR("[%s] failed to reset panel, rc=%d\n", panel->name, rc);
@@ -420,6 +454,9 @@ static int dsi_panel_power_off(struct dsi_panel *panel)
 		       rc);
 	}
 
+#if defined(CONFIG_PXLW_IRIS)
+	iris_power_off(panel);
+#endif
 	rc = dsi_pwr_enable_regulator(&panel->power_info, false);
 	if (rc)
 		DSI_ERR("[%s] failed to enable vregs, rc=%d\n",
@@ -427,7 +464,7 @@ static int dsi_panel_power_off(struct dsi_panel *panel)
 
 	return rc;
 }
-static int dsi_panel_tx_cmd_set(struct dsi_panel *panel,
+int dsi_panel_tx_cmd_set(struct dsi_panel *panel,
 				enum dsi_cmd_set_type type)
 {
 	int rc = 0, i = 0;
@@ -453,6 +490,22 @@ static int dsi_panel_tx_cmd_set(struct dsi_panel *panel,
 		goto error;
 	}
 
+#if defined(CONFIG_PXLW_IRIS)
+	/*
+	 * Iris hook from the msm-5.10 dsi_panel_tx_cmd_set(). The senna panel
+	 * sits behind the Pixelworks Iris chip; in pass-through mode panel
+	 * commands must be sent through Iris (iris_pt_send_panel_cmd()), not
+	 * directly by the DSI controller, or the panel never receives them.
+	 */
+	if (iris_is_chip_supported() && iris_is_pt_mode(panel)) {
+		rc = iris_pt_send_panel_cmd(panel,
+				&(mode->priv_info->cmd_sets[type]));
+		if (rc)
+			DSI_ERR("iris_pt_send_panel_cmd failed, type=%d\n", type);
+		goto error;
+	}
+#endif
+
 	for (i = 0; i < count; i++) {
 		cmds->ctrl_flags = 0;
 
@@ -468,9 +521,28 @@ static int dsi_panel_tx_cmd_set(struct dsi_panel *panel,
 			DSI_ERR("failed to set cmds(%d), rc=%d\n", type, rc);
 			goto error;
 		}
+#ifdef OPLUS_FEATURE_DISPLAY_ONSCREENFINGERPRINT
+		/*
+		 * Post-command delay. With the under-display fingerprint sensor
+		 * enabled the wait is aligned to panel TE instead of a plain usleep:
+		 * the HBM on/off commands must land in the right frame, otherwise
+		 * the finger illumination is mistimed.
+		 *
+		 * Taken from dsi_panel_tx_cmd_set() in the OnePlus sm8750 (sun) 6.6
+		 * release.
+		 */
+		if (oplus_ofp_is_supported() && oplus_ofp_optical_new_solution_is_enabled()) {
+			oplus_ofp_cmd_post_wait(mode, cmds, type);
+		} else {
+			if (cmds->post_wait_ms)
+				usleep_range(cmds->post_wait_ms*1000,
+						((cmds->post_wait_ms*1000)+10));
+		}
+#else
 		if (cmds->post_wait_ms)
 			usleep_range(cmds->post_wait_ms*1000,
 					((cmds->post_wait_ms*1000)+10));
+#endif /* OPLUS_FEATURE_DISPLAY_ONSCREENFINGERPRINT */
 		cmds++;
 	}
 error:
@@ -549,6 +621,216 @@ static int dsi_panel_wled_register(struct dsi_panel *panel,
 	return 0;
 }
 
+#ifdef OPLUS_FEATURE_DISPLAY
+#include "../oplus/oplus_display_panel_common.h"
+#endif /* OPLUS_FEATURE_DISPLAY */
+
+#ifdef OPLUS_FEATURE_DISPLAY
+/*
+ * FORWARDPORT: DBV (skip-frame) compensation for NT37705 panels.
+ *
+ * On every brightness change the panel needs the full set of compensation
+ * registers (ELVSS / vref2 / duty) for the current DBV range; without it
+ * levels above 1603 show a white haze and raised blacks. In the OPlus 5.10
+ * vendor code this is oplus_display_update_dbv(), called from
+ * oplus_panel_update_backlight(); the command data comes from
+ * `qcom,mdss-dsi-skipframe-dbv-command` in the panel timing nodes.
+ *
+ * Only the DBV compensation is ported. The rest of
+ * oplus_panel_update_backlight() (HBM mapping, temperature compensation,
+ * ADFR, OFP) is not needed here: the mappings are for Samsung panels, and
+ * global HBM only starts above bl_normal_max_level (3515).
+ *
+ * The THREEPULSE table is used to match the stock 5.10 behaviour, whose
+ * panel node lacks `oplus,pwm-onepulse-support` (so
+ * oplus_panel_pwm_onepulse_is_enabled() returned false). The LineageOS DT
+ * (panel revision ID05) does set that property.
+ */
+static const unsigned char dbv_skipframe_para[12][17] = {
+	/* 120HZ-DUTY 90HZ-DUTY 120HZ-DUTY 120HZ-VREF2 90HZ-VREF2 144HZ-VREF2 vdata DBV */
+	{32, 40, 48, 32, 40, 32, 40, 48, 55, 55, 55, 55, 55, 55, 55, 55, 55}, /* HBM */
+	{32, 40, 48, 32, 40, 32, 40, 48, 27, 27, 36, 29, 29, 38, 27, 27, 36}, /* 2315<=DBV<3515 */
+	{32, 40, 48, 32, 40, 32, 40, 48, 27, 27, 36, 29, 29, 38, 27, 27, 36}, /* 1604<=DBV<2315 */
+	{8, 8, 8, 4, 4, 8, 8, 8, 30, 30, 30, 31, 31, 31, 30, 30, 30},         /* 1511<=DBV<1604 */
+	{8, 8, 8, 4, 4, 8, 8, 8, 30, 30, 30, 31, 31, 31, 30, 30, 30},         /* 1419<=DBV<1511 */
+	{4, 8, 8, 4, 4, 4, 8, 8, 30, 30, 30, 31, 31, 31, 30, 30, 30},         /* 1328<=DBV<1419 */
+	{4, 8, 8, 4, 4, 4, 8, 8, 30, 30, 30, 31, 31, 31, 30, 30, 30},         /* 1212<=DBV<1328 */
+	{4, 4, 4, 4, 4, 4, 4, 4, 29, 29, 29, 30, 30, 30, 29, 29, 29},         /* 1096<=DBV<1212 */
+	{4, 4, 4, 4, 4, 4, 4, 4, 29, 29, 29, 30, 30, 30, 29, 29, 29},         /* 950<=DBV<1096 */
+	{0, 4, 4, 0, 0, 0, 4, 4, 28, 28, 28, 30, 30, 30, 28, 28, 28},         /* 761<=DBV<950 */
+	{0, 0, 0, 0, 0, 0, 0, 0, 28, 28, 28, 28, 28, 28, 28, 28, 28},         /* 544<=DBV<761 */
+	{0, 0, 0, 0, 0, 0, 0, 0, 27, 27, 27, 28, 28, 28, 27, 27, 27},         /* 8<=DBV<544 */
+};
+
+/* DBV thresholds, descending; the first match selects the table row. */
+static const u32 dbv_skipframe_thresholds[11] = {
+	3516, 2315, 1604, 1511, 1419, 1328, 1212, 1096, 950, 761, 544,
+};
+
+/* The function patches command buffers with indices up to 16 inclusive. */
+#define DBV_SKIPFRAME_MIN_CMDS	17
+
+static int dsi_panel_update_skipframe_dbv(struct dsi_panel *panel, u32 bl_lvl)
+{
+	struct dsi_panel_cmd_set *set;
+	struct dsi_cmd_desc *cmds;
+	const unsigned char *para;
+	unsigned short vpark;
+	unsigned char voltage = 69;
+	unsigned char v1, v2;
+	u8 *buf[DBV_SKIPFRAME_MIN_CMDS];
+	size_t len[DBV_SKIPFRAME_MIN_CMDS];
+	int i, row, rc;
+
+	if (!panel->cur_mode || !panel->cur_mode->priv_info)
+		return 0;
+
+	set = &panel->cur_mode->priv_info->cmd_sets[DSI_CMD_SKIPFRAME_DBV];
+
+	/*
+	 * No commands in DT means the panel does not use this compensation.
+	 * This is the only gate; the panel name is deliberately not checked.
+	 */
+	if (set->count < DBV_SKIPFRAME_MIN_CMDS)
+		return 0;
+
+	cmds = set->cmds;
+	for (i = 0; i < DBV_SKIPFRAME_MIN_CMDS; i++) {
+		buf[i] = (u8 *)cmds[i].msg.tx_buf;
+		len[i] = cmds[i].msg.tx_len;
+		if (!buf[i])
+			return 0;
+	}
+
+	/* Required buffer lengths, otherwise we would write out of bounds. */
+	if (len[2] < 16 || len[4] < 12 || len[6] < 12 || len[8] < 22 ||
+	    len[9] < 2 || len[11] < 2 || len[13] < 2 || len[16] < 5)
+		return 0;
+
+	for (row = 0; row < 11; row++)
+		if (bl_lvl >= dbv_skipframe_thresholds[row])
+			break;
+	para = dbv_skipframe_para[row];
+
+	for (i = 0; i < 3; i++) {
+		buf[2][4 + i + 1] = para[0];
+		buf[2][8 + i + 1] = para[1];
+		buf[2][12 + i + 1] = para[2];
+		buf[4][4 + i + 1] = para[3];
+		buf[4][8 + i + 1] = para[4];
+		buf[6][4 + i + 1] = para[5];
+		buf[6][8 + i + 1] = para[6];
+	}
+	for (i = 0; i < 3; i++) {
+		buf[8][i + 1] = para[8 + i];
+		buf[8][9 + i + 1] = para[11 + i];
+		buf[8][18 + i + 1] = para[14 + i];
+	}
+
+	/*
+	 * vpark is computed exactly as in the 5.10 vendor code. With voltage = 69
+	 * it is 0 and all four bytes are zero; the full calculation is kept in
+	 * case the voltage changes.
+	 */
+	vpark = (69 - voltage) * 1024 / (69 - 10);
+	v1 = ((vpark & 0xFF00) >> 8) + ((vpark & 0xFF00) >> 6) + ((vpark & 0xFF00) >> 4);
+	v2 = vpark & 0xFF;
+	buf[16][1] = v1;
+	buf[16][2] = v2;
+	buf[16][3] = v2;
+	buf[16][4] = v2;
+
+	/* Panel pulse mode switch at the 1603/1604 boundary. */
+	if (bl_lvl > 0x643) {
+		buf[9][1] = 0xB2;
+		buf[11][1] = 0xB2;
+		buf[13][1] = 0xB2;
+	} else {
+		buf[9][1] = 0xD2;
+		buf[11][1] = 0xE2;
+		buf[13][1] = 0xD2;
+	}
+
+	rc = dsi_panel_tx_cmd_set(panel, DSI_CMD_SKIPFRAME_DBV);
+	if (rc < 0)
+		DSI_ERR("failed to send skipframe dbv, bl=%u rc=%d\n", bl_lvl, rc);
+
+	return rc;
+}
+
+/*
+ * FORWARDPORT: oplus_panel_pwm_switch_backlight() from the OPlus 5.10
+ * vendor code (oplus_bl.c).
+ *
+ * The NT37705 panel has two PWM dimming modes and needs the full register
+ * set when crossing `oplus,pwm-switch-backlight-threshold` (0x643 = 1603 on
+ * senna):
+ *
+ *   bl >  threshold  -> DSI_CMD_PWM_SWITCH_HIGH
+ *   bl <= threshold  -> DSI_CMD_PWM_SWITCH_LOW
+ *
+ * Otherwise the panel stays in the mode set by the bootloader, which shows
+ * raised blacks above the threshold.
+ *
+ * Differences from the 5.10 code:
+ * - 5.10 sends via oplus_panel_pwm_switch_wait_te_tx_cmd(), which waits for
+ *   TE so the command lands between frames; here it is sent directly. If
+ *   tearing shows up when crossing the threshold, fix it here.
+ * - The DRM_PANEL_EVENT_PWM_TURBO userspace notification is not sent.
+ * - There is no pwm_hbm_state lock, which in 5.10 suppresses switching
+ *   during HBM (set by oplus_ofp_backlight_filter()).
+ */
+static int dsi_panel_update_pwm_switch(struct dsi_panel *panel, u32 bl_lvl)
+{
+	enum dsi_cmd_set_type type;
+	int rc;
+
+	if (!panel->cur_mode || !panel->cur_mode->priv_info)
+		return 0;
+
+	/* No threshold in DT: the panel does not use PWM switching. */
+	if (!panel->pwm_switch_bl_threshold)
+		return 0;
+
+	if (bl_lvl > panel->pwm_switch_bl_threshold)
+		type = DSI_CMD_PWM_SWITCH_HIGH;
+	else
+		type = DSI_CMD_PWM_SWITCH_LOW;
+
+	if (!panel->cur_mode->priv_info->cmd_sets[type].count)
+		return 0;
+
+	/*
+	 * HBM itself switches the panel into high-pulse mode: the tail of
+	 * `qcom,mdss-dsi-hbm-on-command` (B2/B3/B4) is identical to
+	 * `pwm-switch-high`, and `hbm-off` is empty. Leaving HBM therefore
+	 * restores nothing, and if the brightness did not change the check
+	 * below would skip the resend, leaving low-brightness colours shifted
+	 * towards purple.
+	 *
+	 * The OFP layer sets pwm_power_on on DSI_CMD_HBM_OFF to force a resend;
+	 * in 5.10 the flag is consumed by oplus_panel_pwm_switch_wait_te_tx_cmd().
+	 */
+	if (panel->oplus_priv.pwm_power_on)
+		panel->oplus_priv.pwm_power_on = false;
+	else if (panel->pwm_switch_last_type == type)
+		return 0;
+
+	rc = dsi_panel_tx_cmd_set(panel, type);
+	if (rc < 0) {
+		DSI_ERR("failed to send pwm switch %s, bl=%u rc=%d\n",
+			type == DSI_CMD_PWM_SWITCH_HIGH ? "high" : "low",
+			bl_lvl, rc);
+		return rc;
+	}
+
+	panel->pwm_switch_last_type = type;
+
+	return 0;
+}
+
+#endif /* OPLUS_FEATURE_DISPLAY */
+
 static int dsi_panel_update_backlight(struct dsi_panel *panel,
 	u32 bl_lvl)
 {
@@ -561,11 +843,55 @@ static int dsi_panel_update_backlight(struct dsi_panel *panel,
 		return -EINVAL;
 	}
 
+#ifdef OPLUS_FEATURE_DISPLAY
+	/*
+	 * The NT37705 panel goes fully dark below level 8. The OPlus 5.10 vendor
+	 * code clamps to 8 for all three revisions of this panel (TM_NT37705,
+	 * _DVT, _DVT_ID05).
+	 */
+	if (bl_lvl > 0 && bl_lvl < 8)
+		bl_lvl = 8;
+
+	/*
+	 * During HBM the panel brightness is set by the `hbm-on` command itself
+	 * (ending in `51 0F 00`, i.e. maximum) and dimming is done by the dim
+	 * layer in composition, so framework brightness writes must be filtered
+	 * out or the image is dimmed twice. On HBM exit the OFP layer restores
+	 * the level via dsi_panel_set_backlight(panel, panel->bl_config.bl_level).
+	 *
+	 * The filter must come before MIPI_DSI_MODE_LPM is set below, since this
+	 * path returns early and would not restore mode_flags.
+	 *
+	 * TODO: lock screen brightness (FOD icon keeps DIM_LAYER and HBM on) is
+	 * lower than set. Not yet ported from the vendor
+	 * oplus_panel_update_backlight(): oplus_panel_backlight_level_mapping(),
+	 * oplus_panel_global_hbm_mapping() and oplus_last_backlight tracking.
+	 * The vendor function cannot be called as a whole: it matches panels by
+	 * name and does not know TM_NT37705_DVT_ID05, which would drop DBV
+	 * compensation.
+	 */
+	if (oplus_ofp_is_supported() && oplus_ofp_backlight_filter(panel, bl_lvl))
+		return 0;
+#endif /* OPLUS_FEATURE_DISPLAY */
+
 	dsi = &panel->mipi_device;
 	if (unlikely(panel->bl_config.lp_mode)) {
 		mode_flags = dsi->mode_flags;
 		dsi->mode_flags |= MIPI_DSI_MODE_LPM;
 	}
+
+	/*
+	 * Same order as the 5.10 oplus_panel_update_backlight(): PWM mode, then
+	 * DBV compensation, then the brightness itself.
+	 */
+#ifdef OPLUS_FEATURE_DISPLAY
+	if (bl_lvl > 1)
+		dsi_panel_update_pwm_switch(panel, bl_lvl);
+
+	if (bl_lvl > 1)
+		dsi_panel_update_skipframe_dbv(panel, bl_lvl);
+
+#endif /* OPLUS_FEATURE_DISPLAY */
 
 	if (panel->bl_config.bl_inverted_dbv)
 		bl_lvl = (((bl_lvl & 0xff) << 8) | (bl_lvl >> 8));
@@ -1887,6 +2213,105 @@ const char *cmd_set_prop_map[DSI_CMD_SET_MAX] = {
 	"qcom,mdss-dsi-post-mode-switch-on-command",
 	"qcom,mdss-dsi-qsync-on-commands",
 	"qcom,mdss-dsi-qsync-off-commands",
+#ifdef OPLUS_FEATURE_DISPLAY_TEMP_COMPENSATION
+	"qcom,mdss-dsi-read-temp-compensation-reg-command",
+	"qcom,mdss-dsi-temperature-compensation-command",
+#endif /* OPLUS_FEATURE_DISPLAY_TEMP_COMPENSATION */
+#ifdef OPLUS_FEATURE_DISPLAY_ONSCREENFINGERPRINT
+	"qcom,mdss-dsi-hbm-on-command",
+	"qcom,mdss-dsi-hbm-off-command",
+	"qcom,mdss-dsi-aor-on-command",
+	"qcom,mdss-dsi-aor-off-command",
+	"qcom,mdss-dsi-lp1-hpwm-command",
+	"qcom,mdss-dsi-nolp-hpwm-command",
+	"qcom,mdss-dsi-aod-high-mode-command",
+	"qcom,mdss-dsi-aod-low-mode-command",
+	"qcom,mdss-dsi-ultra-low-power-aod-on-command",
+	"qcom,mdss-dsi-ultra-low-power-aod-off-command",
+#endif /* OPLUS_FEATURE_DISPLAY_ONSCREENFINGERPRINT */
+#ifdef OPLUS_FEATURE_DISPLAY
+	"qcom,mdss-dsi-post-on-backlight",
+	"qcom,mdss-dsi-seed-0-command",
+	"qcom,mdss-dsi-seed-1-command",
+	"qcom,mdss-dsi-seed-2-command",
+	"qcom,mdss-dsi-seed-3-command",
+	"qcom,mdss-dsi-seed-4-command",
+	"qcom,mdss-dsi-seed-off-command",
+	"qcom,mdss-dsi-spr-0-command",
+	"qcom,mdss-dsi-spr-1-command",
+	"qcom,mdss-dsi-spr-2-command",
+	"qcom,mdss-dsi-data-dimming-on-command",
+	"qcom,mdss-dsi-data-dimming-off-command",
+	"qcom,mdss-dsi-osc-clk-mode0-command",
+	"qcom,mdss-dsi-osc-clk-mode1-command",
+	"qcom,mdss-dsi-ffc-mode0-command",
+	"qcom,mdss-dsi-ffc-mode1-command",
+	"qcom,mdss-dsi-ffc-mode2-command",
+	"qcom,mdss-dsi-ffc-mode3-command",
+	"qcom,mdss-dsi-panel-id1-command",
+	"qcom,mdss-dsi-panel-read-register-open-command",
+	"qcom,mdss-dsi-panel-read-register-close-command",
+	"qcom,mdss-dsi-loading-effect-1-command",
+	"qcom,mdss-dsi-loading-effect-2-command",
+	"qcom,mdss-dsi-loading-effect-off-command",
+	"qcom,mdss-dsi-hbm-enter-switch-command",
+	"qcom,mdss-dsi-hbm-exit-switch-command",
+	"qcom,mdss-dsi-skipframe-dbv-command",
+	"qcom,mdss-dsi-reset-scanline-command",
+	"qcom,mdss-dsi-recovery-scanline-command",
+	"qcom,mdss-dsi-switch-avdd-command",
+	"qcom,mdss-dsi-switch-elvss-command",
+	"qcom,mdss-dsi-switch-high-fre-120-command",
+	"qcom,mdss-dsi-switch-low-fre-120-command",
+	"qcom,mdss-dsi-on-high-fre-command",
+	"qcom,mdss-dsi-timing-switch-high-fre-command",
+	"qcom,mdss-dsi-timing-switch-120-command",
+	"qcom,mdss-dsi-timing-switch-120-high-fre-command",
+	"qcom,mdss-dsi-lpwm-pulse-command",
+	"qcom,mdss-dsi-hpwm-pulse-command",
+#endif /* OPLUS_FEATURE_DISPLAY */
+#ifdef OPLUS_FEATURE_DISPLAY
+	"qcom,mdss-dsi-qsync-min-fps-0-command",
+	"qcom,mdss-dsi-qsync-min-fps-1-command",
+	"qcom,mdss-dsi-qsync-min-fps-2-command",
+	"qcom,mdss-dsi-qsync-min-fps-3-command",
+	"qcom,mdss-dsi-qsync-min-fps-4-command",
+	"qcom,mdss-dsi-qsync-min-fps-5-command",
+	"qcom,mdss-dsi-qsync-min-fps-6-command",
+	"qcom,mdss-dsi-qsync-min-fps-7-command",
+	"qcom,mdss-dsi-qsync-min-fps-8-command",
+	"qcom,mdss-dsi-qsync-min-fps-9-command",
+	"qcom,mdss-dsi-fakeframe-command",
+	"qcom,mdss-dsi-adfr-pre-switch-command",
+	"qcom,mdss-dsi-dly-on-command",
+	"qcom,mdss-dsi-dly-off-command",
+	"qcom,mdss-dsi-cabc-off-command",
+	"qcom,mdss-dsi-cabc-ui-command",
+	"qcom,mdss-dsi-cabc-still-image-command",
+	"qcom,mdss-dsi-cabc-video-command",
+	"qcom,mdss-dsi-esd-switch-page-command",
+	"qcom,mdss-dsi-crc-check-reg1-command",
+	"qcom,mdss-dsi-crc-check-reg2-command",
+	"qcom,mdss-dsi-crc-check-reg3-command",
+	"qcom,mdss-dsi-crc-check-reg4-command",
+	"qcom,mdss-dsi-crc-check-reg5-command",
+	"qcom,mdss-dsi-crc-check-reg6-command",
+	"qcom,dsi-panel-date-switch-command",
+	"qcom,mdss-dsi-panel-info-switch-page-command",
+	"qcom,mdss-dsi-default-switch-page-command",
+	"qcom,mdss-dsi-set-backlight-command",
+	"qcom,mdss-dsi-bl-demura1-command",
+	"qcom,mdss-dsi-bl-demura2-command",
+	"qcom,mdss-dsi-bl-demura3-command",
+	"qcom,mdss-dsi-bl-demura4-command",
+	"qcom,mdss-dsi-bl-demura5-command",
+	"qcom,mdss-dsi-bl-demura6-command",
+#endif /* OPLUS_FEATURE_DISPLAY */
+#ifdef OPLUS_FEATURE_DISPLAY
+	/* senna panel extension, see dsi_defs.h */
+	"qcom,mdss-dsi-pwm-switch-high-command",
+	"qcom,mdss-dsi-pwm-switch-low-command",
+#endif /* OPLUS_FEATURE_DISPLAY */
 };
 
 const char *cmd_set_state_map[DSI_CMD_SET_MAX] = {
@@ -1915,6 +2340,105 @@ const char *cmd_set_state_map[DSI_CMD_SET_MAX] = {
 	"qcom,mdss-dsi-post-mode-switch-on-command-state",
 	"qcom,mdss-dsi-qsync-on-commands-state",
 	"qcom,mdss-dsi-qsync-off-commands-state",
+#ifdef OPLUS_FEATURE_DISPLAY_TEMP_COMPENSATION
+	"qcom,mdss-dsi-read-temp-compensation-reg-command-state",
+	"qcom,mdss-dsi-temperature-compensation-command-state",
+#endif /* OPLUS_FEATURE_DISPLAY_TEMP_COMPENSATION */
+#ifdef OPLUS_FEATURE_DISPLAY_ONSCREENFINGERPRINT
+	"qcom,mdss-dsi-hbm-on-command-state",
+	"qcom,mdss-dsi-hbm-off-command-state",
+	"qcom,mdss-dsi-aor-on-command-state",
+	"qcom,mdss-dsi-aor-off-command-state",
+	"qcom,mdss-dsi-lp1-hpwm-command-state",
+	"qcom,mdss-dsi-nolp-hpwm-command-state",
+	"qcom,mdss-dsi-aod-high-mode-command-state",
+	"qcom,mdss-dsi-aod-low-mode-command-state",
+	"qcom,mdss-dsi-ultra-low-power-aod-on-command-state",
+	"qcom,mdss-dsi-ultra-low-power-aod-off-command-state",
+#endif /* OPLUS_FEATURE_DISPLAY_ONSCREENFINGERPRINT */
+#ifdef OPLUS_FEATURE_DISPLAY
+	"qcom,mdss-dsi-post-on-backlight-state",
+	"qcom,mdss-dsi-seed-0-command-state",
+	"qcom,mdss-dsi-seed-1-command-state",
+	"qcom,mdss-dsi-seed-2-command-state",
+	"qcom,mdss-dsi-seed-3-command-state",
+	"qcom,mdss-dsi-seed-4-command-state",
+	"qcom,mdss-dsi-seed-off-command-state",
+	"qcom,mdss-dsi-spr-0-command-state",
+	"qcom,mdss-dsi-spr-1-command-state",
+	"qcom,mdss-dsi-spr-2-command-state",
+	"qcom,mdss-dsi-data-dimming-on-command-state",
+	"qcom,mdss-dsi-data-dimming-off-command-state",
+	"qcom,mdss-dsi-osc-clk-mode0-command-state",
+	"qcom,mdss-dsi-osc-clk-mode1-command-state",
+	"qcom,mdss-dsi-ffc-mode0-command-state",
+	"qcom,mdss-dsi-ffc-mode1-command-state",
+	"qcom,mdss-dsi-ffc-mode2-command-state",
+	"qcom,mdss-dsi-ffc-mode3-command-state",
+	"qcom,mdss-dsi-panel-id1-command-state",
+	"qcom,mdss-dsi-panel-read-register-open-state",
+	"qcom,mdss-dsi-panel-read-register-close-state",
+	"qcom,mdss-dsi-loading-effect-1-command-state",
+	"qcom,mdss-dsi-loading-effect-2-command-state",
+	"qcom,mdss-dsi-loading-effect-off-command-state",
+	"qcom,mdss-dsi-hbm-enter-switch-command-state",
+	"qcom,mdss-dsi-hbm-exit-switch-command-state",
+	"qcom,mdss-dsi-skipframe-dbv-command-state",
+	"qcom,mdss-dsi-reset-scanline-command-state",
+	"qcom,mdss-dsi-recovery-scanline-command-state",
+	"qcom,mdss-dsi-switch-avdd-command-state",
+	"qcom,mdss-dsi-switch-elvss-command-state",
+	"qcom,mdss-dsi-switch-high-fre-120-command-state",
+	"qcom,mdss-dsi-switch-low-fre-120-command-state",
+	"qcom,mdss-dsi-on-high-fre-command-state",
+	"qcom,mdss-dsi-timing-switch-high-fre-command-state",
+	"qcom,mdss-dsi-timing-switch-120-command-state",
+	"qcom,mdss-dsi-timing-switch-120-high-fre-command-state",
+	"qcom,mdss-dsi-lpwm-pulse-command-state",
+	"qcom,mdss-dsi-hpwm-pulse-command-state",
+#endif /* OPLUS_FEATURE_DISPLAY */
+#ifdef OPLUS_FEATURE_DISPLAY
+	"qcom,mdss-dsi-qsync-min-fps-0-command-state",
+	"qcom,mdss-dsi-qsync-min-fps-1-command-state",
+	"qcom,mdss-dsi-qsync-min-fps-2-command-state",
+	"qcom,mdss-dsi-qsync-min-fps-3-command-state",
+	"qcom,mdss-dsi-qsync-min-fps-4-command-state",
+	"qcom,mdss-dsi-qsync-min-fps-5-command-state",
+	"qcom,mdss-dsi-qsync-min-fps-6-command-state",
+	"qcom,mdss-dsi-qsync-min-fps-7-command-state",
+	"qcom,mdss-dsi-qsync-min-fps-8-command-state",
+	"qcom,mdss-dsi-qsync-min-fps-9-command-state",
+	"qcom,mdss-dsi-fakeframe-command-state",
+	"qcom,mdss-dsi-adfr-pre-switch-command-state",
+	"qcom,mdss-dsi-dly-on-command-state",
+	"qcom,mdss-dsi-dly-off-command-state",
+	"qcom,mdss-dsi-cabc-off-command-state",
+	"qcom,mdss-dsi-cabc-ui-command-state",
+	"qcom,mdss-dsi-cabc-still-image-command-state",
+	"qcom,mdss-dsi-cabc-video-command-state",
+	"qcom,mdss-dsi-esd-switch-page-command-state",
+	"qcom,mdss-dsi-crc-check-reg1-command-state",
+	"qcom,mdss-dsi-crc-check-reg2-command-state",
+	"qcom,mdss-dsi-crc-check-reg3-command-state",
+	"qcom,mdss-dsi-crc-check-reg4-command-state",
+	"qcom,mdss-dsi-crc-check-reg5-command-state",
+	"qcom,mdss-dsi-crc-check-reg6-command-state",
+	"qcom,dsi-panel-date-switch-command-state",
+	"qcom,mdss-dsi-panel-info-switch-page-command-state",
+	"qcom,mdss-dsi-default-switch-page-command-state",
+	"qcom,mdss-dsi-set-backlight-command-state",
+	"qcom,mdss-dsi-bl-demura1-command-state",
+	"qcom,mdss-dsi-bl-demura2-command-state",
+	"qcom,mdss-dsi-bl-demura3-command-state",
+	"qcom,mdss-dsi-bl-demura4-command-state",
+	"qcom,mdss-dsi-bl-demura5-command-state",
+	"qcom,mdss-dsi-bl-demura6-command-state",
+#endif /* OPLUS_FEATURE_DISPLAY */
+#ifdef OPLUS_FEATURE_DISPLAY
+	/* senna panel extension, see dsi_defs.h */
+	"qcom,mdss-dsi-pwm-switch-high-command-state",
+	"qcom,mdss-dsi-pwm-switch-low-command-state",
+#endif /* OPLUS_FEATURE_DISPLAY */
 };
 
 int dsi_panel_get_cmd_pkt_count(const char *data, u32 length, u32 *cnt)
@@ -2107,6 +2631,10 @@ static int dsi_panel_parse_cmd_sets(
 				DSI_ERR("failed to allocate cmd set %d, rc = %d\n",
 					i, rc);
 			set->state = DSI_CMD_SET_STATE_LP;
+#if defined(CONFIG_PXLW_IRIS)
+			if (iris_is_chip_supported())
+				set->state = DSI_CMD_SET_STATE_HS;
+#endif
 		} else {
 			rc = dsi_panel_parse_cmd_sets_sub(set, i, utils);
 			if (rc)
@@ -2397,10 +2925,17 @@ static int dsi_panel_parse_gpios(struct dsi_panel *panel)
 	const char *data;
 	struct dsi_parser_utils *utils = &panel->utils;
 	char *reset_gpio_name, *mode_set_gpio_name;
+#if defined(CONFIG_PXLW_IRIS)
+	bool is_primary = false;
+#endif
 
 	if (!strcmp(panel->type, "primary")) {
 		reset_gpio_name = "qcom,platform-reset-gpio";
 		mode_set_gpio_name = "qcom,panel-mode-gpio";
+#if defined(CONFIG_PXLW_IRIS)
+		if (iris_is_chip_supported())
+			is_primary = true;
+#endif
 	} else {
 		reset_gpio_name = "qcom,platform-sec-reset-gpio";
 		mode_set_gpio_name = "qcom,panel-sec-mode-gpio";
@@ -2560,6 +3095,18 @@ static int dsi_panel_parse_bl_config(struct dsi_panel *panel)
 	} else {
 		panel->bl_config.bl_max_level = val;
 	}
+
+	/*
+	 * FORWARDPORT from the OPlus 5.10 oplus_bl.c: PWM mode switch threshold.
+	 * If absent, dsi_panel_update_pwm_switch() sends nothing.
+	 */
+	rc = utils->read_u32(utils->data,
+			     "oplus,pwm-switch-backlight-threshold", &val);
+	if (rc)
+		panel->pwm_switch_bl_threshold = 0;
+	else
+		panel->pwm_switch_bl_threshold = val;
+	rc = 0;
 
 	rc = utils->read_u32(utils->data, "qcom,mdss-brightness-max-level",
 		&val);
@@ -3648,6 +4195,24 @@ struct dsi_panel *dsi_panel_get(struct device *parent,
 	if (!panel->name)
 		panel->name = DSI_PANEL_DEFAULT_LABEL;
 
+#if defined(CONFIG_PXLW_IRIS)
+	/*
+	 * Iris hook from the msm-5.10 kernel, right after the panel name is
+	 * parsed. iris_query_capability() reads `pxlw,iris-chip-enable` and sets
+	 * iris_chip_enable; without it iris_is_chip_supported() is false and the
+	 * whole Iris layer (including driver registration) silently bails out.
+	 */
+	iris_query_capability(panel);
+#endif
+
+#ifdef OPLUS_FEATURE_DISPLAY_ONSCREENFINGERPRINT
+	/*
+	 * Parse `oplus,ofp-fp-type` and the rest of the under-display
+	 * fingerprint config; without it the sysfs fp_type stays 0.
+	 */
+	oplus_ofp_init(panel);
+#endif /* OPLUS_FEATURE_DISPLAY_ONSCREENFINGERPRINT */
+
 	/*
 	 * Set panel type to LCD as default.
 	 */
@@ -3698,6 +4263,17 @@ struct dsi_panel *dsi_panel_get(struct device *parent,
 		DSI_ERR("failed to parse panel gpios, rc=%d\n", rc);
 		goto error;
 	}
+
+#ifdef OPLUS_FEATURE_DISPLAY
+	/*
+	 * Parse `oplus,mdss-dsi-vendor-name` and `-manufacture`, used for
+	 * /proc/devinfo/lcd, from which the fingerprint HAL identifies the
+	 * panel vendor.
+	 */
+	rc = dsi_panel_parse_oplus_config(panel);
+	if (rc)
+		DSI_ERR("failed to parse panel oplus config, rc=%d\n", rc);
+#endif /* OPLUS_FEATURE_DISPLAY */
 
 	rc = panel->panel_ops.parse_power_cfg(panel);
 	if (rc)
@@ -3802,6 +4378,13 @@ int dsi_panel_drv_init(struct dsi_panel *panel,
 	if (rc) {
 		DSI_ERR("[%s] failed to request gpios, rc=%d\n", panel->name,
 		       rc);
+#if defined(CONFIG_PXLW_IRIS)
+		if (iris_is_chip_supported()) {
+			if (!strcmp(panel->type, "primary"))
+				goto error_pinctrl_deinit;
+			rc = 0;
+		} else
+#endif
 		goto error_pinctrl_deinit;
 	}
 
@@ -4274,6 +4857,20 @@ int dsi_panel_get_mode(struct dsi_panel *panel,
 		rc = dsi_panel_parse_partial_update_caps(mode, utils);
 		if (rc)
 			DSI_ERR("failed to partial update caps, rc=%d\n", rc);
+
+#ifdef OPLUS_FEATURE_DISPLAY_ONSCREENFINGERPRINT
+		/*
+		 * Parse the per-mode under-display fingerprint config from DT (HBM
+		 * command sets and TE-relative delays). Taken from
+		 * dsi_panel_get_mode() in the OnePlus sm8750 (sun) 6.6 release.
+		 */
+		if (oplus_ofp_is_supported()) {
+			rc = oplus_ofp_parse_dtsi_config(mode, utils);
+			if (rc) {
+				OFP_ERR("failed to parse ofp dtsi config, rc=%d\n", rc);
+			}
+		}
+#endif /* OPLUS_FEATURE_DISPLAY_ONSCREENFINGERPRINT */
 	}
 
 parse_fail:
@@ -4339,6 +4936,11 @@ int dsi_panel_pre_prepare(struct dsi_panel *panel)
 
 	mutex_lock(&panel->panel_lock);
 
+#if defined(CONFIG_PXLW_IRIS)
+	/* Iris power-on (as in the msm-5.10 kernel). */
+	iris_power_on(panel);
+#endif
+
 	/* If LP11_INIT is set, panel will be powered up during prepare() */
 	if (panel->lp11_init)
 		goto error;
@@ -4364,6 +4966,10 @@ int dsi_panel_update_pps(struct dsi_panel *panel)
 		DSI_ERR("invalid params\n");
 		return -EINVAL;
 	}
+#if defined(PXLW_IRIS_DUAL)
+	if (iris_is_dual_supported() && panel->is_secondary)
+		return rc;
+#endif
 
 	mutex_lock(&panel->panel_lock);
 
@@ -4388,7 +4994,9 @@ int dsi_panel_update_pps(struct dsi_panel *panel)
 			goto error;
 		}
 	}
-
+#if defined(CONFIG_PXLW_IRIS)
+	iris_dsi_panel_dump_pps(set);
+#endif
 	rc = dsi_panel_tx_cmd_set(panel, DSI_CMD_SET_PPS);
 	if (rc) {
 		DSI_ERR("[%s] failed to send DSI_CMD_SET_PPS cmds, rc=%d\n",
@@ -4429,6 +5037,9 @@ int dsi_panel_set_lp1(struct dsi_panel *panel)
 	if (rc)
 		DSI_ERR("[%s] failed to send DSI_CMD_SET_LP1 cmd, rc=%d\n",
 		       panel->name, rc);
+#ifdef OPLUS_FEATURE_DISPLAY
+	set_oplus_display_power_status(OPLUS_DISPLAY_POWER_DOZE);
+#endif /* OPLUS_FEATURE_DISPLAY */
 exit:
 	mutex_unlock(&panel->panel_lock);
 	return rc;
@@ -4451,6 +5062,9 @@ int dsi_panel_set_lp2(struct dsi_panel *panel)
 	if (rc)
 		DSI_ERR("[%s] failed to send DSI_CMD_SET_LP2 cmd, rc=%d\n",
 		       panel->name, rc);
+#ifdef OPLUS_FEATURE_DISPLAY
+	set_oplus_display_power_status(OPLUS_DISPLAY_POWER_DOZE_SUSPEND);
+#endif /* OPLUS_FEATURE_DISPLAY */
 exit:
 	mutex_unlock(&panel->panel_lock);
 	return rc;
@@ -4470,6 +5084,15 @@ int dsi_panel_set_nolp(struct dsi_panel *panel)
 		goto exit;
 
 	/*
+	 * Leaving AOD also resets the panel PWM mode and demura; invalidate the
+	 * cached state as in dsi_panel_disable() so the next brightness change
+	 * resends the commands.
+	 */
+	panel->pwm_switch_last_type = DSI_CMD_SET_PRE_ON;
+	panel->demura_last_type = DSI_CMD_SET_PRE_ON;
+	panel->demura_last_hbm = false;
+
+	/*
 	 * Consider about LP1->LP2->NOLP.
 	 */
 	if (dsi_panel_is_type_oled(panel) &&
@@ -4481,6 +5104,9 @@ int dsi_panel_set_nolp(struct dsi_panel *panel)
 	if (rc)
 		DSI_ERR("[%s] failed to send DSI_CMD_SET_NOLP cmd, rc=%d\n",
 		       panel->name, rc);
+#ifdef OPLUS_FEATURE_DISPLAY
+	set_oplus_display_power_status(OPLUS_DISPLAY_POWER_ON);
+#endif /* OPLUS_FEATURE_DISPLAY */
 exit:
 	mutex_unlock(&panel->panel_lock);
 	return rc;
@@ -4612,6 +5238,9 @@ int dsi_panel_send_qsync_on_dcs(struct dsi_panel *panel,
 		DSI_ERR("[%s] failed to send DSI_CMD_SET_QSYNC_ON cmds rc=%d\n",
 		       panel->name, rc);
 
+#if defined(CONFIG_PXLW_IRIS)
+	iris_qsync_set(true);
+#endif
 	mutex_unlock(&panel->panel_lock);
 	return rc;
 }
@@ -4633,6 +5262,9 @@ int dsi_panel_send_qsync_off_dcs(struct dsi_panel *panel,
 	if (rc)
 		DSI_ERR("[%s] failed to send DSI_CMD_SET_QSYNC_OFF cmds rc=%d\n",
 		       panel->name, rc);
+#if defined(CONFIG_PXLW_IRIS)
+	iris_qsync_set(false);
+#endif
 
 	mutex_unlock(&panel->panel_lock);
 	return rc;
@@ -4767,8 +5399,30 @@ int dsi_panel_switch(struct dsi_panel *panel)
 		return -EINVAL;
 	}
 
+#if defined(CONFIG_PXLW_IRIS)
+	if (iris_is_dual_supported() && panel->is_secondary) {
+		iris_update_2nd_active_timing(panel);
+		return rc;
+	}
+#endif
+
 	mutex_lock(&panel->panel_lock);
 
+#if defined(CONFIG_PXLW_IRIS)
+	/*
+	 * As in the msm-5.10 kernel, mode switches (refresh rate / resolution)
+	 * go through Iris: iris_pre_switch() reconfigures the chip, and in
+	 * pass-through mode the TIMING_SWITCH commands are sent by iris_switch()
+	 * rather than the DSI controller.
+	 */
+	if (iris_is_chip_supported())
+		iris_pre_switch(panel, &panel->cur_mode->timing);
+	if (iris_is_chip_supported() && iris_is_pt_mode(panel)) {
+		rc = iris_switch(panel,
+			&(panel->cur_mode->priv_info->cmd_sets[DSI_CMD_SET_TIMING_SWITCH]),
+			&panel->cur_mode->timing);
+	} else
+#endif
 	rc = dsi_panel_tx_cmd_set(panel, DSI_CMD_SET_TIMING_SWITCH);
 	if (rc)
 		DSI_ERR("[%s] failed to send DSI_CMD_SET_TIMING_SWITCH cmds, rc=%d\n",
@@ -4809,6 +5463,21 @@ int dsi_panel_enable(struct dsi_panel *panel)
 
 	mutex_lock(&panel->panel_lock);
 
+#if defined(CONFIG_PXLW_IRIS)
+	/*
+	 * Iris hook from the msm-5.10 kernel: iris_enable() performs the
+	 * Pixelworks lightup and switches the chip to pass-through to the
+	 * panel. Without it Iris probes but never lights up the panel.
+	 */
+	if (iris_is_chip_supported()) {
+		panel->hbm_mode = 0;
+		rc = iris_enable(panel, NULL);
+		if (rc)
+			DSI_ERR("[%s] failed to enable iris, rc=%d\n",
+				panel->name, rc);
+	}
+#endif
+
 	rc = dsi_panel_tx_cmd_set(panel, DSI_CMD_SET_ON);
 	if (rc) {
 		DSI_ERR("[%s] failed to send DSI_CMD_SET_ON cmds, rc=%d\n",
@@ -4832,6 +5501,26 @@ int dsi_panel_enable(struct dsi_panel *panel)
 		}
 	}
 	panel->panel_initialized = true;
+#ifdef OPLUS_FEATURE_DISPLAY
+	/*
+	 * Otherwise the OPlus layer treats the panel as off and rejects its
+	 * sysfs nodes ("display panel in off status"), including
+	 * panel_serial_number.
+	 */
+	panel->need_power_on_backlight = true;
+	set_oplus_display_power_status(OPLUS_DISPLAY_POWER_ON);
+	panel->power_mode = SDE_MODE_DPMS_ON;
+#endif /* OPLUS_FEATURE_DISPLAY */
+#if defined(CONFIG_PXLW_IRIS)
+	if (iris_is_chip_supported() && panel->qsync_mode > 0) {
+		rc = dsi_panel_tx_cmd_set(panel, DSI_CMD_SET_QSYNC_ON);
+		if (rc)
+			DSI_ERR("[%s] failed to send DSI_CMD_SET_QSYNC_ON cmds rc=%d\n",
+				panel->name, rc);
+		if (iris_qsync_update_need())
+			iris_qsync_set(true);
+	}
+#endif
 
 error:
 	mutex_unlock(&panel->panel_lock);
@@ -4895,7 +5584,23 @@ int dsi_panel_disable(struct dsi_panel *panel)
 		return -EINVAL;
 	}
 
+#if defined(CONFIG_PXLW_IRIS)
+	if (iris_is_dual_supported() && panel->is_secondary) {
+		panel->panel_initialized = false;
+		return rc;
+	}
+#endif
 	mutex_lock(&panel->panel_lock);
+
+	/*
+	 * Power-off drops the panel PWM mode and demura table; on power-on it
+	 * returns to the `on-command` state. Invalidate the cached state so the
+	 * next brightness update resends the commands even at the same level
+	 * (5.10 uses the pwm_power_on / post_power_on flags for this).
+	 */
+	panel->pwm_switch_last_type = DSI_CMD_SET_PRE_ON;
+	panel->demura_last_type = DSI_CMD_SET_PRE_ON;
+	panel->demura_last_hbm = false;
 
 	/* Avoid sending panel off commands when ESD recovery is underway */
 	if (!atomic_read(&panel->esd_recovery_pending)) {
@@ -4921,7 +5626,19 @@ int dsi_panel_disable(struct dsi_panel *panel)
 			rc = 0;
 		}
 	}
+#if defined(CONFIG_PXLW_IRIS)
+	/* Iris power-off (as in the msm-5.10 kernel). */
+	if (iris_is_chip_supported()) {
+		bool dead = atomic_read(&panel->esd_recovery_pending);
+
+		iris_disable(panel, dead, NULL);
+		panel->hbm_mode = 0;
+	}
+#endif
 	panel->panel_initialized = false;
+#ifdef OPLUS_FEATURE_DISPLAY
+	set_oplus_display_power_status(OPLUS_DISPLAY_POWER_OFF);
+#endif /* OPLUS_FEATURE_DISPLAY */
 	panel->power_mode = SDE_MODE_DPMS_OFF;
 
 	mutex_unlock(&panel->panel_lock);

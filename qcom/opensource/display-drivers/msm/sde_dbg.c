@@ -25,12 +25,27 @@
 
 #define SDE_DBG_BASE_MAX		10
 
-#define DEFAULT_PANIC		1
+/*
+ * Qualcomm (and the msm-5.10 kernel) default to 1. Default to 0 here so an
+ * SDE error dump does not take down the kernel on a device without UART or
+ * pstore; set msm_drm.sde_panic_on_err=1 for the original behaviour.
+ */
+#define DEFAULT_PANIC		0
 #define DEFAULT_BASE_REG_CNT	DEFAULT_MDSS_HW_BLOCK_SIZE
+
 #define GROUP_BYTES		4
 #define ROW_BYTES		16
 #define RANGE_NAME_LEN		40
 #define REG_BASE_NAME_LEN	80
+
+/*
+ * Whether an SDE error dump ends in panic(). Only the panic is controlled;
+ * the register dump still goes to dmesg.
+ */
+static int sde_panic_on_err = DEFAULT_PANIC;
+module_param(sde_panic_on_err, int, 0644);
+MODULE_PARM_DESC(sde_panic_on_err,
+		"1: panic after the SDE dump (QC default), 0: dump to dmesg only");
 
 #define DBGBUS_NAME_SDE		"sde"
 #define DBGBUS_NAME_VBIF_RT	"vbif_rt"
@@ -2662,7 +2677,7 @@ int sde_dbg_init(struct device *dev)
 	INIT_WORK(&sde_dbg_base.dump_work, _sde_dump_work);
 	sde_dbg_base.work_panic = false;
 	sde_dbg_base.coredump_reading = false;
-	sde_dbg_base.panic_on_err = DEFAULT_PANIC;
+	sde_dbg_base.panic_on_err = sde_panic_on_err;
 	sde_dbg_base.dump_option = SDE_DBG_DEFAULT_DUMP_MODE;
 	sde_dbg_base.dump_blk_mask = SDE_DBG_BUILT_IN_ALL;
 	memset(&sde_dbg_base.regbuf, 0, sizeof(sde_dbg_base.regbuf));

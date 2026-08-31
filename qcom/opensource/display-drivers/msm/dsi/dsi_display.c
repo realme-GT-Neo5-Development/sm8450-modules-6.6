@@ -23,6 +23,39 @@
 #include "dsi_pwr.h"
 #include "sde_dbg.h"
 #include "dsi_parser.h"
+#if defined(CONFIG_PXLW_IRIS)
+#include "dsi_iris_api.h"
+
+#if defined(CONFIG_PXLW_IRIS)
+/* Missing declarations - 5.10 dsi_display.c:64-69. */
+extern int iris_i2c_bus_init(void);
+extern void iris_i2c_bus_exit(void);
+extern int iris_pure_i2c_bus_init(void);
+extern void iris_pure_i2c_bus_exit(void);
+#endif
+#endif
+#if defined(CONFIG_PXLW_IRIS)
+/* Provided by the OPlus module oplus_bsp_boot_projectinfo. Iris uses it to
+ * tell the board variants apart: is_project(22624) is senna. */
+extern unsigned int is_project(int project);
+#endif
+
+#ifdef OPLUS_FEATURE_DISPLAY
+#include "../oplus/oplus_display_private_api.h"
+#include "../oplus/oplus_display_panel.h"
+#include "../oplus/oplus_display_panel_feature.h"
+
+/*
+ * The OPlus layer keeps both panel handles globally: all of its sysfs
+ * paths call `get_main_display()` (including `panel_serial_number`, which
+ * the fingerprint HAL needs).
+ */
+static struct dsi_display *primary_display;
+static struct dsi_display *secondary_display;
+
+/* Not declared in the OPlus layer headers; LineageOS sm8450 5.10 does the same. */
+extern int oplus_display_private_api_init(void);
+#endif /* OPLUS_FEATURE_DISPLAY */
 
 #define to_dsi_display(x) container_of(x, struct dsi_display, host)
 #define INT_BASE_10 10
@@ -40,7 +73,37 @@
 #define SEC_PANEL_NAME_MAX_LEN  256
 
 u8 dbgfs_tx_cmd_buf[SZ_4K];
-static char dsi_display_primary[MAX_CMDLINE_PARAM_LEN];
+/*
+ * Default primary display instead of an empty buffer.
+ *
+ * boot_displays[0].name is derived from this parameter and is the only input
+ * the Pixelworks layer uses to identify the panel:
+ *
+ *   !strcmp(boot_displays[0].name, "qcom,mdss_dsi_oplus_senna_bc_...")
+ *        && is_project(22624)   ->  IRIS_PANEL_SUPPORT_1
+ *
+ * With an empty buffer Iris ends up in IRIS_PANEL_NOT_SUPPORT.
+ *
+ * The bootloader normally passes `msm_drm.dsi_display0=` on the command line,
+ * but for a module libmodprobe takes `modname.param=` from the
+ * ro.boot.kernel_cmdline property, which is not available here, so neither
+ * the command line nor modules.options reaches the module. The value can
+ * still be overridden through module_param_string().
+ *
+ * The name matches `qcom,dsi-default-panel` and
+ * `pxlw,dsi-display-primary-active` in the senna DT.
+ *
+ * `:sim-swte` selects software TE (watchdog timer instead of the panel TE
+ * signal). The senna panel is dsc_cmd, so a frame is only scanned out after
+ * TE. TE is routed through Iris, which stays in bypass until lightup, and
+ * lightup happens on the first commit: commit waits for TE, TE needs an
+ * active Iris, Iris waits for the commit, and the SDE commit path deadlocks.
+ * dsi_display_parse_cmdline_topology() turns `:sim-swte` into
+ * display->sw_te_using_wd and panel->te_using_watchdog_timer, so SDE uses a
+ * timer instead of waiting for hardware TE.
+ */
+static char dsi_display_primary[MAX_CMDLINE_PARAM_LEN] =
+	"qcom,mdss_dsi_oplus_senna_bc_nt37705_1240_2772_dsc_cmd:sim-swte:config0";
 static char dsi_display_secondary[MAX_CMDLINE_PARAM_LEN];
 static struct dsi_display_boot_param boot_displays[MAX_DSI_ACTIVE_DISPLAY] = {
 	{.boot_param = dsi_display_primary},
@@ -281,7 +344,7 @@ error:
 	return rc;
 }
 
-static int dsi_display_cmd_engine_enable(struct dsi_display *display)
+int dsi_display_cmd_engine_enable(struct dsi_display *display)
 {
 	int rc = 0;
 	int i;
@@ -323,7 +386,7 @@ done:
 	return rc;
 }
 
-static int dsi_display_cmd_engine_disable(struct dsi_display *display)
+int dsi_display_cmd_engine_disable(struct dsi_display *display)
 {
 	int rc = 0;
 	int i;
@@ -355,6 +418,23 @@ static int dsi_display_cmd_engine_disable(struct dsi_display *display)
 	mutex_unlock(&m_ctrl->ctrl->ctrl_lock);
 	return rc;
 }
+
+#if defined(CONFIG_PXLW_IRIS)
+/*
+ * Wrappers for the Pixelworks Iris layer, as in the msm-5.10 kernel.
+ * dsi_display_cmd_engine_*() and dsi_display_ctrl_get_host_init_state() are
+ * static, but msm/iris needs to call them from outside this file.
+ */
+int iris_display_cmd_engine_enable(struct dsi_display *display)
+{
+	return dsi_display_cmd_engine_enable(display);
+}
+
+int iris_display_cmd_engine_disable(struct dsi_display *display)
+{
+	return dsi_display_cmd_engine_disable(display);
+}
+#endif
 
 static void dsi_display_aspace_cb_locked(void *cb_data, bool is_detach)
 {
@@ -447,6 +527,15 @@ static void dsi_display_change_te_irq_status(struct dsi_display *display,
 	}
 }
 
+#ifdef OPLUS_FEATURE_DISPLAY
+void dsi_display_adfr_change_te_irq_status(void *disp, bool enable)
+{
+	struct dsi_display *display = disp;
+
+	dsi_display_change_te_irq_status(display, enable);
+}
+#endif /* OPLUS_FEATURE_DISPLAY */
+
 static void dsi_display_register_te_irq(struct dsi_display *display)
 {
 	int rc = 0;
@@ -504,11 +593,18 @@ error:
 }
 
 /* Allocate memory for cmd dma tx buffer */
-static int dsi_host_alloc_cmd_tx_buffer(struct dsi_display *display)
+int dsi_host_alloc_cmd_tx_buffer(struct dsi_display *display)
 {
 	int rc = 0, cnt = 0;
 	struct dsi_display_ctrl *display_ctrl;
 
+#if defined(CONFIG_PXLW_IRIS)
+	if (iris_is_chip_supported()) {
+		display->tx_cmd_buf = msm_gem_new(display->drm_dev,
+				IRIS_CMD_SIZE,
+				MSM_BO_UNCACHED);
+	} else
+#endif
 	display->tx_cmd_buf = msm_gem_new(display->drm_dev,
 			SZ_4K,
 			MSM_BO_UNCACHED);
@@ -520,6 +616,10 @@ static int dsi_host_alloc_cmd_tx_buffer(struct dsi_display *display)
 	}
 
 	display->cmd_buffer_size = SZ_4K;
+#if defined(CONFIG_PXLW_IRIS)
+	if (iris_is_chip_supported())
+		display->cmd_buffer_size = IRIS_CMD_SIZE;
+#endif
 
 	display->aspace = msm_gem_smmu_address_space_get(
 			display->drm_dev, MSM_SMMU_DOMAIN_UNSECURE);
@@ -560,6 +660,10 @@ static int dsi_host_alloc_cmd_tx_buffer(struct dsi_display *display)
 	display_for_each_ctrl(cnt, display) {
 		display_ctrl = &display->ctrl[cnt];
 		display_ctrl->ctrl->cmd_buffer_size = SZ_4K;
+#if defined(CONFIG_PXLW_IRIS)
+		if (iris_is_chip_supported())
+			display_ctrl->ctrl->cmd_buffer_size = IRIS_CMD_SIZE;
+#endif
 		display_ctrl->ctrl->cmd_buffer_iova =
 					display->cmd_buffer_iova;
 		display_ctrl->ctrl->vaddr = display->vaddr;
@@ -676,8 +780,13 @@ static void dsi_display_parse_te_data(struct dsi_display *display)
 	display->te_source = val;
 }
 
+#ifdef OPLUS_FEATURE_DISPLAY
+void dsi_display_set_cmd_tx_ctrl_flags(struct dsi_display *display,
+		struct dsi_cmd_desc *cmd)
+#else /* OPLUS_FEATURE_DISPLAY */
 static void dsi_display_set_cmd_tx_ctrl_flags(struct dsi_display *display,
 		struct dsi_cmd_desc *cmd)
+#endif /* OPLUS_FEATURE_DISPLAY */
 {
 	struct dsi_display_ctrl *ctrl, *m_ctrl;
 	struct mipi_dsi_msg *msg = &cmd->msg;
@@ -804,7 +913,19 @@ static int dsi_display_read_status(struct dsi_display_ctrl *ctrl,
 			DSI_ERR("prepare for rx cmd transfer failed rc=%d\n", rc);
 			return rc;
 		}
+#if defined(CONFIG_PXLW_IRIS)
+		if (iris_is_chip_supported() && iris_is_pt_mode(display->panel)) {
+			struct dsi_panel_cmd_set cmdset;
 
+			memset(&cmdset, 0x00, sizeof(cmdset));
+			cmdset.state = config->status_cmd.state;
+			cmdset.count = 1;
+			cmdset.cmds = &cmds[i];
+			rc = iris_pt_send_panel_cmd(display->panel, &cmdset);
+			if (rc == 0)
+				rc = 1;
+		} else
+#endif
 		rc = dsi_ctrl_cmd_transfer(ctrl->ctrl, &cmds[i]);
 		if (rc <= 0) {
 			DSI_ERR("rx cmd transfer failed rc=%d\n", rc);
@@ -817,6 +938,11 @@ static int dsi_display_read_status(struct dsi_display_ctrl *ctrl,
 		dsi_ctrl_transfer_unprepare(ctrl->ctrl, cmds[i].ctrl_flags);
 	}
 
+#if defined(CONFIG_PXLW_IRIS)
+	if (iris_is_chip_supported())
+		iris_check_reg_read(display->panel);
+#endif
+
 	return rc;
 }
 
@@ -825,6 +951,13 @@ static int dsi_display_validate_status(struct dsi_display_ctrl *ctrl,
 {
 	int rc = 0;
 
+#if defined(CONFIG_PXLW_IRIS)
+	if (iris_is_chip_supported()) {
+		rc = iris_status_get(ctrl, display->panel);
+		if (rc <= 1)
+			goto exit;
+	}
+#endif
 	rc = dsi_display_read_status(ctrl, display);
 	if (rc <= 0) {
 		goto exit;
@@ -1054,6 +1187,14 @@ static int dsi_display_ctrl_get_host_init_state(struct dsi_display *dsi_display,
 	*state = final_state;
 	return rc;
 }
+
+#if defined(CONFIG_PXLW_IRIS)
+int iris_dsi_display_ctrl_get_host_init_state(struct dsi_display *dsi_display,
+		bool *state)
+{
+	return dsi_display_ctrl_get_host_init_state(dsi_display, state);
+}
+#endif
 
 static int dsi_display_cmd_rx(struct dsi_display *display,
 			      struct dsi_cmd_desc *cmd)
@@ -2076,6 +2217,9 @@ static int dsi_display_debugfs_init(struct dsi_display *display)
 	debugfs_create_bool("ulps_status", 0400, dir, &display->ulps_enabled);
 
 	debugfs_create_u32("clk_gating_config", 0600, dir, &display->clk_gating_config);
+#if defined(CONFIG_PXLW_IRIS)
+	iris_dsi_display_debugfs_init(display, dir, dump_file);
+#endif
 
 	display->root = dir;
 	dsi_parser_dbg_init(display->parser, dir);
@@ -4197,6 +4341,10 @@ error:
 
 static bool dsi_display_validate_panel_resources(struct dsi_display *display)
 {
+#if defined(CONFIG_PXLW_IRIS)
+	if (iris_is_dual_supported() && display->panel->is_secondary)
+		return true;
+#endif
 	if (!is_sim_panel(display)) {
 		if (!display->panel->host_config.ext_bridge_mode &&
 				!gpio_is_valid(display->panel->reset_config.reset_gpio)) {
@@ -4246,6 +4394,20 @@ static int dsi_display_res_init(struct dsi_display *display)
 		display->panel = NULL;
 		goto error_ctrl_put;
 	}
+
+#if defined(CONFIG_PXLW_IRIS) || defined(CONFIG_PXLW_SOFT_IRIS)
+	/*
+	 * Iris hook from the msm-5.10 dsi_display_res_init(), right after the
+	 * panel is obtained:
+	 *   iris_dsi_display_res_init() -> iris_init() -> iris_driver_register()
+	 *
+	 * Without it the Iris platform driver is never registered, the
+	 * `pxlw,iris` DT node is never probed and the chip stays uninitialized.
+	 * Iris sits between the SoC and the panel, so no frame reaches the
+	 * display even though DRM itself works.
+	 */
+	iris_dsi_display_res_init(display);
+#endif
 
 	display->panel->te_using_watchdog_timer |= display->sw_te_using_wd;
 
@@ -4299,6 +4461,16 @@ static int dsi_display_res_init(struct dsi_display *display)
 		display->is_active = true;
 		display->hw_ownership = true;
 	}
+
+#ifdef OPLUS_FEATURE_DISPLAY
+	/*
+	 * Parse the OPlus panel node properties, e.g. `oplus,dsi-serial-number-*`.
+	 * Without this serial_number_support stays false, the sysfs
+	 * panel_serial_number is empty and the fingerprint HAL cannot identify
+	 * the panel vendor.
+	 */
+	oplus_panel_features_config(display->panel);
+#endif /* OPLUS_FEATURE_DISPLAY */
 
 	return 0;
 error_panel_put:
@@ -5386,6 +5558,10 @@ int dsi_display_cont_splash_config(void *dsi_display)
 		goto clk_manager_update;
 	}
 
+#if defined(CONFIG_PXLW_IRIS)
+	iris_control_pwr_regulator(true);
+#endif
+
 	mutex_unlock(&display->display_lock);
 
 	/* Set the current brightness level */
@@ -5682,6 +5858,17 @@ static int dsi_display_bind(struct device *dev,
 		}
 	}
 
+#ifdef OPLUS_FEATURE_DISPLAY
+	/*
+	 * Register /proc/devinfo/lcd with the panel vendor and model. The
+	 * fingerprint HAL reads the vendor code from it ("TM1240" -> TM on
+	 * senna); without it the HAL falls back to "SDC" and loads calibration
+	 * for the wrong panel.
+	 */
+	if (oplus_set_display_vendor(display) != 0)
+		pr_err("maybe send a null point to oplus display manager\n");
+#endif /* OPLUS_FEATURE_DISPLAY */
+
 	mutex_lock(&display->display_lock);
 
 	rc = dsi_display_validate_split_link(display);
@@ -5811,7 +5998,18 @@ static int dsi_display_bind(struct device *dev,
 	}
 
 
+#if defined(PXLW_IRIS_DUAL)
+	/* register osd irq handler */
+	iris_register_osd_irq(display);
+#endif
 	msm_register_vm_event(master, dev, &vm_event_ops, (void *)display);
+#ifdef OPLUS_FEATURE_DISPLAY
+	/*
+	 * Creates /sys/kernel/oplus_display/ with the panel_serial_number, hbm
+	 * and nit_brightness nodes. The fingerprint HAL reads them directly.
+	 */
+	oplus_display_private_api_init();
+#endif /* OPLUS_FEATURE_DISPLAY */
 
 	goto error;
 
@@ -5973,6 +6171,84 @@ static void dsi_display_firmware_display(const struct firmware *fw,
 	DSI_DEBUG("success\n");
 }
 
+#if defined(CONFIG_PXLW_IRIS)
+static struct device_node *_iris_dsi_display_get_panel_node(struct platform_device *pdev, int panel_index)
+{
+	struct device_node *node = NULL, *mdp_node = NULL;
+	const char *disp_name = NULL;
+	int i = 0;
+	static const char * const disp_name_type[] = {
+		"pxlw,dsi-display-primary-active",
+		"pxlw,dsi-display-secondary-active"};
+	static const char * const disp_name_type_2nd[] = {
+		"pxlw,dsi-display-primary-active-2nd",
+		"pxlw,dsi-display-secondary-active-2nd"};
+	static const char * const disp_name_type_third[] = {
+		"pxlw,dsi-display-primary-active-third",
+		"pxlw,dsi-display-secondary-active-third"};
+	static const char * const disp_name_type_fourth[] = {
+		"pxlw,dsi-display-primary-active-fourth",
+		"pxlw,dsi-display-secondary-active-fourth"};
+
+	if (pdev == NULL)
+		return NULL;
+
+	if (panel_index < IRIS_PANEL_NOT_SUPPORT || panel_index >= IRIS_PANEL_SUPPORT_MAX)
+		return NULL;
+
+	node = pdev->dev.of_node;
+	mdp_node = of_parse_phandle(node, "qcom,mdp", 0);
+	if (!mdp_node) {
+		DSI_ERR("mdp_node not found\n");
+		return NULL;
+	}
+
+	/*
+	 * Primary display only (i = 0).
+	 *
+	 * senna has a single panel, but the DT still has
+	 * `qcom,dsi-display-secondary`, sharing the controllers and PHY with the
+	 * primary (`qcom,dsi-ctrl = <&dsi_ctrl0 &dsi_ctrl1>`). Without a panel its
+	 * probe returns quietly and the component master still binds (card0).
+	 * Assigning boot_displays[1] from `pxlw,dsi-display-secondary-active`
+	 * gives it the `..._ab575..._2nd` panel, whose probe then fails on the
+	 * missing reset GPIO (-EINVAL) and blocks the whole master. Disabling the
+	 * node in DT does not help either: the master keeps waiting for the
+	 * missing component. So the secondary node stays enabled without a panel.
+	 */
+	for (i = 0; i < 1; i++) {
+		switch (panel_index) {
+			case IRIS_PANEL_SUPPORT_1:
+				of_property_read_string(mdp_node, disp_name_type[i], &disp_name);
+				break;
+
+			case IRIS_PANEL_SUPPORT_2:
+				of_property_read_string(mdp_node, disp_name_type_2nd[i], &disp_name);
+				break;
+			case IRIS_PANEL_SUPPORT_3:
+				of_property_read_string(mdp_node, disp_name_type_third[i], &disp_name);
+				break;
+			case IRIS_PANEL_SUPPORT_4:
+				of_property_read_string(mdp_node, disp_name_type_fourth[i], &disp_name);
+				break;
+			default:
+				DSI_ERR("IRIS_LOG I iris not support panel!\n");
+				break;
+		}
+
+		if (disp_name) {
+			DSI_INFO("actual display name: %s, boot display set enable\n", disp_name);
+
+			strlcpy(boot_displays[i].name, disp_name, MAX_CMDLINE_PARAM_LEN);
+			boot_displays[i].boot_disp_en = true;
+			disp_name = NULL;
+		}
+	}
+
+	return NULL;
+}
+#endif
+
 int dsi_display_dev_probe(struct platform_device *pdev)
 {
 	struct dsi_display *display = NULL;
@@ -5980,6 +6256,9 @@ int dsi_display_dev_probe(struct platform_device *pdev)
 	int rc = 0, index = DSI_PRIMARY;
 	bool firm_req = false;
 	struct dsi_display_boot_param *boot_disp;
+#if defined(CONFIG_PXLW_IRIS)
+	u8 iris_compat_lcm_id = 0;
+#endif
 
 	if (!pdev || !pdev->dev.of_node) {
 		DSI_ERR("pdev not found\n");
@@ -6024,6 +6303,28 @@ int dsi_display_dev_probe(struct platform_device *pdev)
 	if (!strcmp(display->display_type, "secondary"))
 		index = DSI_SECONDARY;
 
+#if defined(CONFIG_PXLW_IRIS)
+	if (!strcmp(boot_displays[0].name, "qcom,mdss_dsi_oplus21606_nt37701b_1080_2412_dsc_cmd_udc") ||
+		is_project(22803) ||
+		((!strcmp(boot_displays[0].name, "qcom,mdss_dsi_oplus_senna_bc_nt37705_1240_2772_dsc_cmd")) &&
+		(is_project(22624) || is_project(22625) || is_project(0x226B2) || is_project(0x226B3))))
+		iris_compat_lcm_id = IRIS_PANEL_SUPPORT_1;
+	else if (!strcmp(boot_displays[0].name, "qcom,mdss_dsi_oplus21605_nt37701a_1080_2412_dsc_cmd") ||
+		((!strcmp(boot_displays[0].name, "qcom,mdss_dsi_oplus_senna_bc_nt37705_1240_2772_dsc_cmd_evt")) &&
+		(is_project(22624) || is_project(22625) || is_project(0x226B2) || is_project(0x226B3))))
+		iris_compat_lcm_id = IRIS_PANEL_SUPPORT_2;
+	else if (((!strcmp(boot_displays[0].name, "qcom,mdss_dsi_oplus_senna_bc_nt37705_1240_2772_dsc_cmd_04")) &&
+		(is_project(22624) || is_project(22625) || is_project(0x226B2) || is_project(0x226B3))))
+		iris_compat_lcm_id = IRIS_PANEL_SUPPORT_3;
+	else if (((!strcmp(boot_displays[0].name, "qcom,mdss_dsi_oplus_senna_bc_nt37705_06_1240_2772_dsc_cmd")) &&
+		(is_project(22624) || is_project(22625) || is_project(0x226B2) || is_project(0x226B3))))
+		iris_compat_lcm_id = IRIS_PANEL_SUPPORT_4;
+	else
+		iris_compat_lcm_id = IRIS_PANEL_NOT_SUPPORT;
+
+	_iris_dsi_display_get_panel_node(pdev, iris_compat_lcm_id);
+#endif
+
 	boot_disp = &boot_displays[index];
 	node = pdev->dev.of_node;
 	if (boot_disp->boot_disp_en) {
@@ -6049,6 +6350,15 @@ int dsi_display_dev_probe(struct platform_device *pdev)
 	dsi_display_parse_cmdline_topology(display, index);
 
 	platform_set_drvdata(pdev, display);
+
+#ifdef OPLUS_FEATURE_DISPLAY
+	if (!strcmp(display->display_type, "primary")) {
+		primary_display = display;
+		oplus_display_set_current_display(primary_display);
+	} else {
+		secondary_display = display;
+	}
+#endif /* OPLUS_FEATURE_DISPLAY */
 
 	if (!dsi_display_validate_res(display)) {
 		rc = -EPROBE_DEFER;
@@ -6104,6 +6414,10 @@ int dsi_display_dev_remove(struct platform_device *pdev)
 				display, (display) ? display->panel_node : 0);
 		return -EINVAL;
 	}
+
+#if defined(CONFIG_PXLW_IRIS)
+	iris_deinit(display);
+#endif
 
 	/* decrement ref count */
 	of_node_put(display->panel_node);
@@ -7126,12 +7440,16 @@ int dsi_display_get_modes_helper(struct dsi_display *display,
 			nondsc_modes++;
 
 		/*
-		 * Update the host_config.dst_format for compressed RGB101010 pixel format
-		 * when there is no widebus support.
+		 * Update the host_config.dst_format for compressed RGB101010 pixel format.
+		 *
+		 * Newer QC drops skip this when widebus_support is set. On cape
+		 * widebus is enabled from the HW catalog (DSI ctrl 2.5+), which left
+		 * dst_format at RGB101010 and programmed the PLL for 30 bpp instead
+		 * of 24, although the link carries compressed 3-byte pixels. The
+		 * msm-5.10 kernel converts unconditionally.
 		 */
 		if (host->dst_format == DSI_PIXEL_FORMAT_RGB101010 &&
-				display_mode.timing.dsc_enabled &&
-				!display_mode.priv_info->widebus_support) {
+				display_mode.timing.dsc_enabled) {
 			host->dst_format = DSI_PIXEL_FORMAT_RGB888;
 			DSI_DEBUG("updated dst_format from %d to %d\n",
 					DSI_PIXEL_FORMAT_RGB101010, host->dst_format);
@@ -7154,6 +7472,9 @@ int dsi_display_get_modes_helper(struct dsi_display *display,
 				display_mode.timing.mdp_transfer_time_us;
 		}
 
+#if defined(CONFIG_PXLW_IRIS)
+		iris_set_panel_timing(display, mode_idx, &display_mode.timing);
+#endif
 		is_split_link = host->split_link.enabled;
 		sublinks_count = host->split_link.num_sublinks;
 		if (is_split_link && sublinks_count > 1) {
@@ -7893,6 +8214,32 @@ error:
 	return rc;
 }
 
+#ifdef OPLUS_FEATURE_DISPLAY
+int dsi_display_override_dma_cmd_trig(struct dsi_display *display,
+		enum dsi_trigger_type type)
+{
+	int rc = 0;
+	int i;
+	struct dsi_display_ctrl *ctrl;
+
+	if (!display) {
+		DSI_ERR("Invalid params\n");
+		return -EINVAL;
+	}
+
+	display_for_each_ctrl(i, display) {
+		ctrl = &display->ctrl[i];
+		rc = dsi_ctrl_override_dma_cmd_trig(ctrl->ctrl, type);
+		if (rc) {
+			DSI_ERR("[%s] failed to override dma cmd trigger type for host_%d\n",
+					display->name, i);
+			break;
+		}
+	}
+	return rc;
+}
+#endif /* OPLUS_FEATURE_DISPLAY */
+
 static int dsi_display_pre_switch(struct dsi_display *display)
 {
 	int rc = 0;
@@ -8379,6 +8726,9 @@ error_panel_post_unprep:
 error:
 	mutex_unlock(&display->display_lock);
 	SDE_EVT32(SDE_EVTLOG_FUNC_EXIT);
+#if defined(CONFIG_PXLW_IRIS)
+	iris_prepare(display);
+#endif
 	return rc;
 }
 
@@ -8671,6 +9021,9 @@ int dsi_display_enable(struct dsi_display *display)
 	if (is_skip_op_required(display)) {
 
 		dsi_display_config_ctrl_for_cont_splash(display);
+#if defined(CONFIG_PXLW_IRIS)
+		iris_send_cont_splash(display);
+#endif
 
 		rc = dsi_display_splash_res_cleanup(display);
 		if (rc) {
@@ -8683,6 +9036,16 @@ int dsi_display_enable(struct dsi_display *display)
 		DSI_DEBUG("cont splash enabled, display enable not required\n");
 		dsi_display_panel_id_notification(display);
 
+#ifdef OPLUS_FEATURE_DISPLAY
+		/*
+		 * The cont-splash path bypasses dsi_panel_enable(); without this the
+		 * OPlus layer would report power status OFF until the first
+		 * display off/on cycle.
+		 */
+		oplus_display_update_current_display();
+		set_oplus_display_power_status(OPLUS_DISPLAY_POWER_ON);
+		display->panel->power_mode = SDE_MODE_DPMS_ON;
+#endif /* OPLUS_FEATURE_DISPLAY */
 		return 0;
 	}
 
@@ -8813,6 +9176,21 @@ int dsi_display_pre_disable(struct dsi_display *display)
 
 		if (display->config.panel_mode == DSI_OP_VIDEO_MODE)
 			dsi_panel_switch_video_mode_out(display->panel);
+#if defined(CONFIG_PXLW_IRIS)
+		if (iris_is_chip_supported()) {
+			mutex_lock(&display->panel->panel_lock);
+			// switch to video mode
+			if (display->config.panel_mode == DSI_OP_CMD_MODE)
+				iris_dsi_rx_mode_switch(DSI_OP_VIDEO_MODE);
+
+			// switch to command mode
+			if (display->config.panel_mode == DSI_OP_VIDEO_MODE) {
+				iris_sw_te_enable();
+				//iris_dsi_rx_mode_switch(DSI_OP_CMD_MODE);
+			}
+			mutex_unlock(&display->panel->panel_lock);
+		}
+#endif
 	} else {
 		rc = dsi_panel_pre_disable(display->panel);
 		if (rc)
@@ -9101,8 +9479,38 @@ int dsi_display_unprepare(struct dsi_display *display)
 	return rc;
 }
 
+#ifdef OPLUS_FEATURE_DISPLAY
+struct dsi_display *get_main_display(void)
+{
+	return primary_display;
+}
+EXPORT_SYMBOL(get_main_display);
+
+struct dsi_display *get_sec_display(void)
+{
+	return secondary_display;
+}
+EXPORT_SYMBOL(get_sec_display);
+#endif /* OPLUS_FEATURE_DISPLAY */
+
 void __init dsi_display_register(void)
 {
+#if defined(CONFIG_PXLW_IRIS)
+	/*
+	 * Iris hook from the msm-5.10 dsi_display_register(). senna controls
+	 * Iris over I2C ("iris i2c switch: true"); without these buses the chip
+	 * does not accept its configuration.
+	 */
+	iris_pure_i2c_bus_init();
+	iris_i2c_bus_init();
+#endif
+
+#ifdef OPLUS_FEATURE_DISPLAY
+	/* Register /dev/oplus_panel and the panel class (oplus_display_panel.c). */
+	if (oplus_display_panel_init())
+		pr_err("fail to init oplus_display_panel_init\n");
+#endif /* OPLUS_FEATURE_DISPLAY */
+
 	dsi_phy_drv_register();
 	dsi_ctrl_drv_register();
 
@@ -9116,6 +9524,10 @@ void __exit dsi_display_unregister(void)
 	platform_driver_unregister(&dsi_display_driver);
 	dsi_ctrl_drv_unregister();
 	dsi_phy_drv_unregister();
+#if defined(CONFIG_PXLW_IRIS)
+	iris_i2c_bus_exit();
+	iris_pure_i2c_bus_exit();
+#endif
 }
 module_param_string(dsi_display0, dsi_display_primary, MAX_CMDLINE_PARAM_LEN,
 								0600);

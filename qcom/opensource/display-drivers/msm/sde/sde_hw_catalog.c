@@ -4161,9 +4161,17 @@ static void _sde_top_parse_dt_helper(struct sde_mdss_cfg *cfg,
 		}
 	}
 
+	/*
+	 * Store the encoded form (SDE_HW_UBWC_VER), not the raw DT value. All
+	 * consumers (IS_UBWC_*_SUPPORTED in sde_hw_sspp.c, sde_hw_top.c,
+	 * sde_hw_wb.c and the "UBWC version" reported to SDM) compare against
+	 * SDE_HW_UBWC_VER_*, e.g. SDE_HW_VER(4,0,0) = 0x40000000. Newer QC drops
+	 * store the raw 0x400, which makes every comparison fail and misconfigures
+	 * UBWC fetch.
+	 */
 	cfg->ubwc_rev = props->exists[UBWC_VERSION] ?
-			PROP_VALUE_ACCESS(props->values,
-			UBWC_VERSION, 0) : DEFAULT_SDE_UBWC_NONE;
+			SDE_HW_UBWC_VER(PROP_VALUE_ACCESS(props->values,
+			UBWC_VERSION, 0)) : DEFAULT_SDE_UBWC_NONE;
 
 	cfg->mdp[0].highest_bank_bit = DEFAULT_SDE_HIGHEST_BANK_BIT;
 

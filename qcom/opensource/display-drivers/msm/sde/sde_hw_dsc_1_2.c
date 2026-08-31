@@ -296,6 +296,14 @@ static void sde_hw_dsc_config(struct sde_hw_dsc *hw_dsc,
 		data |= BIT(12);
 	if (mode & DSC_MODE_MULTIPLEX)
 		data |= BIT(13);
+	/*
+	 * Command-mode flag for the DSC encoder. In 5.10 this was set here
+	 * unconditionally; upstream moved it into sde_hw_dsc_4hs_config(),
+	 * which only runs when dsc_4hsmerge_en is set. Panels using cmd mode
+	 * without 4HS merge would otherwise never get this bit.
+	 */
+	if (!(mode & DSC_MODE_VIDEO))
+		data |= BIT(17);
 
 	SDE_REG_WRITE(dsc_c, DSC_CFG + idx, data);
 

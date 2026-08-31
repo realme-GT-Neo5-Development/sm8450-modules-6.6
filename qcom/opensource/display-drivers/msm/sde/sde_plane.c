@@ -20,6 +20,12 @@
 #define pr_fmt(fmt)	"[drm:%s:%d] " fmt, __func__, __LINE__
 
 #include <linux/debugfs.h>
+#if defined(CONFIG_PXLW_IRIS)
+/* The 5.10 patch put this inside a function; the include and the
+ * declaration must be at file scope. */
+#include "dsi_iris_api.h"
+extern u32 iris_pq_disable;
+#endif
 #include <linux/dma-buf.h>
 #include <drm/sde_drm.h>
 #include <drm/msm_drm_pp.h>
@@ -1190,6 +1196,9 @@ static inline void _sde_plane_setup_csc(struct sde_plane *psde, struct sde_plane
 	else
 		pstate->csc_ptr = (struct sde_csc_cfg *)&sde_csc_YUV2RGB_601L;
 
+#if defined(CONFIG_PXLW_IRIS)
+	iris_sde_plane_setup_csc(pstate->csc_ptr);
+#endif
 	SDE_DEBUG_PLANE(psde, "using 0x%X 0x%X 0x%X...\n",
 			pstate->csc_ptr->csc_mv[0],
 			pstate->csc_ptr->csc_mv[1],
@@ -2711,6 +2720,80 @@ static int _sde_atomic_check_excl_rect(struct sde_plane *psde,
 	return ret;
 }
 
+#if defined(CONFIG_PXLW_IRIS)
+static void sde_color_process_plane_disable(struct drm_plane *plane)
+{
+	struct sde_plane *psde;
+	struct sde_plane_state *pstate;
+	struct drm_msm_3d_gamut *vig_gamut = NULL;
+	struct drm_msm_igc_lut *igc = NULL;
+	struct drm_msm_pgc_lut *gc = NULL;
+	size_t size = 0;
+	struct sde_hw_cp_cfg hw_cfg = {};
+	struct sde_hw_ctl *ctl = _sde_plane_get_hw_ctl(plane);
+	uint32_t dirty = 0;
+
+	psde = to_sde_plane(plane);
+	pstate = to_sde_plane_state(plane->state);
+
+	dirty = SDE_PLANE_DIRTY_VIG_GAMUT | SDE_PLANE_DIRTY_VIG_IGC
+			| SDE_PLANE_DIRTY_DMA_IGC | SDE_PLANE_DIRTY_DMA_GC;
+
+	if (dirty & SDE_PLANE_DIRTY_VIG_GAMUT &&
+			psde->pipe_hw->ops.setup_vig_gamut) {
+		vig_gamut = msm_property_get_blob(&psde->property_info,
+				&pstate->property_state,
+				&size,
+				PLANE_PROP_VIG_GAMUT);
+		hw_cfg.last_feature = 0;
+		hw_cfg.ctl = ctl;
+		hw_cfg.len = sizeof(struct drm_msm_3d_gamut);
+		hw_cfg.payload = NULL;
+		psde->pipe_hw->ops.setup_vig_gamut(psde->pipe_hw, &hw_cfg);
+	}
+
+	if (dirty & SDE_PLANE_DIRTY_VIG_IGC &&
+			psde->pipe_hw->ops.setup_vig_igc) {
+		igc = msm_property_get_blob(&psde->property_info,
+				&pstate->property_state,
+				&size,
+				PLANE_PROP_VIG_IGC);
+		hw_cfg.last_feature = 0;
+		hw_cfg.ctl = ctl;
+		hw_cfg.len = sizeof(struct drm_msm_igc_lut);
+		hw_cfg.payload = NULL;
+		psde->pipe_hw->ops.setup_vig_igc(psde->pipe_hw, &hw_cfg);
+	}
+
+	if (dirty & SDE_PLANE_DIRTY_DMA_IGC &&
+			psde->pipe_hw->ops.setup_dma_igc) {
+		igc = msm_property_get_blob(&psde->property_info,
+				&pstate->property_state,
+				&size,
+				PLANE_PROP_DMA_IGC);
+		hw_cfg.last_feature = 0;
+		hw_cfg.ctl = ctl;
+		hw_cfg.len = sizeof(struct drm_msm_igc_lut);
+		hw_cfg.payload = NULL;
+		psde->pipe_hw->ops.setup_dma_igc(psde->pipe_hw, &hw_cfg,
+				pstate->multirect_index);
+	}
+
+	if (dirty & SDE_PLANE_DIRTY_DMA_GC &&
+			psde->pipe_hw->ops.setup_dma_gc) {
+		gc = msm_property_get_blob(&psde->property_info,
+				&pstate->property_state,
+				&size,
+				PLANE_PROP_DMA_GC);
+		hw_cfg.last_feature = 0;
+		hw_cfg.ctl = ctl;
+		hw_cfg.len = sizeof(struct drm_msm_pgc_lut);
+		hw_cfg.payload = NULL;
+		psde->pipe_hw->ops.setup_dma_gc(psde->pipe_hw, &hw_cfg,
+				pstate->multirect_index);
+	}
+}
+#endif
 
 static int _sde_plane_validate_shared_crtc(struct sde_plane *psde,
 				struct drm_plane_state *state)
@@ -3481,6 +3564,11 @@ static void _sde_plane_update_properties(struct drm_plane *plane,
 			psde->pipe_hw->ops.setup_format)
 		_sde_plane_update_format_and_rects(psde, pstate, fmt);
 
+#if defined(CONFIG_PXLW_IRIS)
+	if (iris_is_chip_supported() && iris_pq_disable)
+		sde_color_process_plane_disable(plane);
+	else
+#endif
 	sde_color_process_plane_setup(plane);
 
 	/* update sharpening */

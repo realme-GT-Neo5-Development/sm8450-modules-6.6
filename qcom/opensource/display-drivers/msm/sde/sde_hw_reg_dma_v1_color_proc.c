@@ -16,6 +16,14 @@
 #include "sde_hw_util.h"
 #include "sde_kms.h"
 
+#if defined(CONFIG_PXLW_IRIS) || defined(CONFIG_PXLW_SOFT_IRIS)
+#include "dsi_iris_api.h"
+
+#if defined(CONFIG_PXLW_IRIS)
+/* Defined in sde_crtc.c. */
+extern int iris_backlight_update;
+#endif
+#endif
 /* Reserve space of 128 words for LUT dma payload set-up */
 #define REG_DMA_HEADERS_BUFFER_SZ (sizeof(u32) * 128)
 
@@ -741,7 +749,6 @@ void reg_dmav1_setup_dspp_vlutv18(struct sde_hw_dspp *ctx, void *cfg)
 	for (i = 0, j = 0; i < ARRAY_SIZE(payload->val); i += 2, j++)
 		data[j] = (payload->val[i] & REG_MASK(10)) |
 		((payload->val[i + 1] & REG_MASK(10)) << 16);
-
 
 	REG_DMA_SETUP_OPS(dma_write_cfg, ctx->cap->sblk->vlut.base, data,
 			VLUT_LEN, REG_BLK_WRITE_SINGLE, 0, 0, 0);
@@ -2014,6 +2021,7 @@ static int reg_dma_validate_sixzone_config(struct sde_hw_dspp *ctx, void *cfg,
 {
 	struct sde_hw_cp_cfg *hw_cfg = cfg;
 	u32 opcode = 0;
+	size_t exp_len;
 	int rc;
 
 	opcode = SDE_REG_READ(&ctx->hw, ctx->cap->sblk->hsic.base);
@@ -2033,9 +2041,22 @@ static int reg_dma_validate_sixzone_config(struct sde_hw_dspp *ctx, void *cfg,
 		return -EALREADY;
 	}
 
-	if (hw_cfg->len != sizeof(struct drm_msm_sixzone)) {
+	/*
+	 * ABI: SIXZONE v1.7 (cape/waipio) only reads curve[]. sat_adjust_p0/p1
+	 * and curve_p2[] were added in 6.6 for v2.0 (kalama, pineapple), and
+	 * the 5.10 composer HAL sends the shorter pre-extension blob, so the
+	 * expected size depends on the block version, not sizeof(). See also
+	 * _dspp_sixzone_install_property() in sde_color_processing.c.
+	 */
+	exp_len = (ctx->cap->sblk->sixzone.version ==
+			SDE_COLOR_PROCESS_VER(0x2, 0x0)) ?
+		sizeof(struct drm_msm_sixzone) :
+		ALIGN(offsetof(struct drm_msm_sixzone, sat_adjust_p0),
+		      sizeof(__u64));
+
+	if (hw_cfg->len != exp_len) {
 		DRM_ERROR("invalid size of payload len %d exp %zd\n",
-			hw_cfg->len, sizeof(struct drm_msm_sixzone));
+			hw_cfg->len, exp_len);
 		return -EINVAL;
 	}
 
@@ -4752,6 +4773,9 @@ static void _perform_sbdma_kickoff(struct sde_hw_dspp *ctx,
 			REG_DMA_WRITE, DMA_CTL_QUEUE1, WRITE_IMMEDIATE,
 			feature);
 	kick_off.dma_type = REG_DMA_TYPE_SB;
+#if defined(CONFIG_PXLW_IRIS) || defined(CONFIG_PXLW_SOFT_IRIS)
+	iris_backlight_update++;
+#endif
 	rc = dma_ops->kick_off(&kick_off);
 	if (!rc) {
 		for (i = 0; i < hw_cfg->num_of_mixers; i++) {

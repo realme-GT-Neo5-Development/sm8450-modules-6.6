@@ -10,6 +10,13 @@
 #include "sde_core_irq.h"
 #include "sde_formats.h"
 #include "sde_trace.h"
+#if defined(CONFIG_PXLW_IRIS)
+#include "dsi_iris_api.h"
+#endif
+
+#ifdef OPLUS_FEATURE_DISPLAY_ONSCREENFINGERPRINT
+#include "../oplus/oplus_onscreenfingerprint.h"
+#endif /* OPLUS_FEATURE_DISPLAY_ONSCREENFINGERPRINT */
 
 #define SDE_DEBUG_CMDENC(e, fmt, ...) SDE_DEBUG("enc%d intf%d " fmt, \
 		(e) && (e)->base.parent ? \
@@ -70,6 +77,12 @@ static uint64_t _sde_encoder_phys_cmd_get_autorefresh_property(
 
 	if (!conn || !conn->state)
 		return 0;
+#if defined(CONFIG_PXLW_IRIS)
+	if (iris_is_chip_supported()) {
+		if (iris_is_display1_autorefresh_enabled(phys_enc))
+			return 1;
+	}
+#endif
 
 	return sde_connector_get_property(conn->state,
 				CONNECTOR_PROP_AUTOREFRESH);
@@ -450,6 +463,18 @@ static void _sde_encoder_phys_signal_frame_done(struct sde_encoder_phys *phys_en
 
 	/* Signal any waiting atomic commit thread */
 	wake_up_all(&phys_enc->pending_kickoff_wq);
+
+#ifdef OPLUS_FEATURE_DISPLAY_ONSCREENFINGERPRINT
+	/*
+	 * Ping-pong done: the fingerprint (OFP) driver tracks in which frame
+	 * the pressed icon was actually displayed, reports readiness upwards
+	 * and leaves AOD. From the OnePlus sm8750 (sun) 6.6 release.
+	 */
+	if (oplus_ofp_is_supported()) {
+		oplus_ofp_pressed_icon_status_update(phys_enc, OPLUS_OFP_PP_DONE);
+		oplus_ofp_aod_display_on_set(phys_enc);
+	}
+#endif /* OPLUS_FEATURE_DISPLAY_ONSCREENFINGERPRINT */
 }
 
 static void sde_encoder_phys_cmd_ctl_done_irq(void *arg, int irq_idx)
@@ -516,9 +541,32 @@ static void sde_encoder_phys_cmd_te_rd_ptr_irq(void *arg, int irq_idx)
 	struct sde_encoder_phys_cmd_te_timestamp *te_timestamp;
 	unsigned long lock_flags;
 	u32 fence_ready = 0;
+#if defined(CONFIG_PXLW_IRIS) || defined(CONFIG_PXLW_SOFT_IRIS)
+	struct sde_connector *conn;
+#endif
 
 	if (!phys_enc || !phys_enc->hw_pp || !phys_enc->hw_intf || !phys_enc->hw_ctl)
 		return;
+
+#if defined(CONFIG_PXLW_IRIS) || defined(CONFIG_PXLW_SOFT_IRIS)
+	/*
+	 * Timestamp of the last TE, the reference for delaying brightness
+	 * updates (sde_connector_update_panel_level()).
+	 *
+	 * Check the DRM connector before to_sde_connector(): the msm-5.10 code
+	 * checks the container_of() result, which is never NULL. With
+	 * cont_splash the panel already generates TE before
+	 * phys_enc->connector is assigned, so the first TE IRQ can see a NULL
+	 * connector and would spin on a bogus lock with IRQs off.
+	 */
+	if (phys_enc->connector &&
+			(iris_is_chip_supported() || iris_is_softiris_supported())) {
+		conn = to_sde_connector(phys_enc->connector);
+		spin_lock_irqsave(&conn->bl_spinlock, lock_flags);
+		conn->rd_ptr_ktime = ktime_get();
+		spin_unlock_irqrestore(&conn->bl_spinlock, lock_flags);
+	}
+#endif
 
 	SDE_ATRACE_BEGIN("rd_ptr_irq");
 	cmd_enc = to_sde_encoder_phys_cmd(phys_enc);
@@ -554,6 +602,22 @@ static void sde_encoder_phys_cmd_te_rd_ptr_irq(void *arg, int irq_idx)
 
 	atomic_add_unless(&cmd_enc->pending_vblank_cnt, -1, 0);
 	wake_up_all(&cmd_enc->pending_vblank_wq);
+
+#ifdef OPLUS_FEATURE_DISPLAY_ONSCREENFINGERPRINT
+	/*
+	 * TE (read pointer) IRQ, the main sync point for the fingerprint
+	 * driver: checks the HBM delay after AOD exit, updates the pressed icon
+	 * and panel HBM state, and finally signals uiready. From the OnePlus
+	 * sm8750 (sun) 6.6 release.
+	 */
+	if (oplus_ofp_is_supported()) {
+		oplus_ofp_aod_off_hbm_on_delay_check(phys_enc);
+		oplus_ofp_pressed_icon_status_update(phys_enc, OPLUS_OFP_RD_PTR);
+		oplus_ofp_panel_hbm_status_update(phys_enc);
+		oplus_ofp_notify_uiready(phys_enc);
+	}
+#endif /* OPLUS_FEATURE_DISPLAY_ONSCREENFINGERPRINT */
+
 	SDE_ATRACE_END("rd_ptr_irq");
 }
 
@@ -594,6 +658,18 @@ static void sde_encoder_phys_cmd_wr_ptr_irq(void *arg, int irq_idx)
 
 	/* Signal any waiting wr_ptr start interrupt */
 	wake_up_all(&phys_enc->pending_kickoff_wq);
+
+#ifdef OPLUS_FEATURE_DISPLAY_ONSCREENFINGERPRINT
+	/*
+	 * Write pointer IRQ (start of frame transfer). Completes the pressed
+	 * icon tracking done in PP_DONE and RD_PTR. From the OnePlus sm8750
+	 * (sun) 6.6 release.
+	 */
+	if (oplus_ofp_is_supported()) {
+		oplus_ofp_pressed_icon_status_update(phys_enc, OPLUS_OFP_WD_PTR);
+	}
+#endif /* OPLUS_FEATURE_DISPLAY_ONSCREENFINGERPRINT */
+
 	SDE_ATRACE_END("wr_ptr_irq");
 }
 
@@ -2261,6 +2337,9 @@ static void _sde_encoder_autorefresh_disable_seq1(
 		trial++;
 	} while (_sde_encoder_phys_cmd_is_ongoing_pptx(phys_enc));
 }
+#if defined(PXLW_IRIS_DUAL)
+#include "sde_iris_encoder_phys_cmd.c"
+#endif
 
 static void _sde_encoder_autorefresh_disable_seq2(
 		struct sde_encoder_phys *phys_enc)

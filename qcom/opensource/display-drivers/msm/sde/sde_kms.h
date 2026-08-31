@@ -43,6 +43,10 @@
 #include "sde_irq.h"
 #include "sde_core_perf.h"
 
+#ifdef OPLUS_FEATURE_DISPLAY
+#include <soc/oplus/system/oplus_project.h>
+#endif /* OPLUS_FEATURE_DISPLAY */
+
 #define DRMID(x) ((x) ? (x)->base.id : -1)
 
 /**

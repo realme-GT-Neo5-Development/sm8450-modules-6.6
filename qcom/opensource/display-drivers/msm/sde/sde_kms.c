@@ -68,9 +68,16 @@
 #ifdef CONFIG_DRM_SDE_VM
 #include <linux/gunyah/gh_irq_lend.h>
 #endif
+#if defined(CONFIG_PXLW_IRIS) || defined(CONFIG_PXLW_SOFT_IRIS)
+#include "dsi_iris_api.h"
+#endif
 
 #define CREATE_TRACE_POINTS
 #include "sde_trace.h"
+
+#ifdef OPLUS_FEATURE_DISPLAY
+#include "../oplus/oplus_display_private_api.h"
+#endif /* OPLUS_FEATURE_DISPLAY */
 
 /* defines for secure channel call */
 #define MEM_PROTECT_SD_CTRL_SWITCH 0x18
@@ -1889,7 +1896,19 @@ static int _sde_kms_setup_displays(struct drm_device *dev,
 		.soft_reset   = dsi_display_soft_reset,
 		.pre_kickoff  = dsi_conn_pre_kickoff,
 		.clk_ctrl = dsi_display_clk_ctrl,
+#ifdef OPLUS_FEATURE_DISPLAY
+		/*
+		 * OPlus wrapper around dsi_display_set_power(). It also notifies
+		 * the OPlus layer (oplus_ofp_power_mode_handle()), which resets the
+		 * HBM and AOD state when the panel is powered off; otherwise the HBM
+		 * state survives a display off/on cycle. Same hook as in the OPlus
+		 * 5.10 vendor code (oplus_display_set_power() in the OnePlus sm8750
+		 * (sun) 6.6 release).
+		 */
+		.set_power = dsi_display_oplus_set_power,
+#else /* OPLUS_FEATURE_DISPLAY */
 		.set_power = dsi_display_set_power,
+#endif /* OPLUS_FEATURE_DISPLAY */
 		.get_mode_info = dsi_conn_get_mode_info,
 		.get_dst_format = dsi_display_get_dst_format,
 		.post_kickoff = dsi_conn_post_kickoff,
@@ -4388,6 +4407,9 @@ static const struct msm_kms_funcs kms_funcs = {
 	.trigger_null_flush = sde_kms_trigger_null_flush,
 	.get_mixer_count = sde_kms_get_mixer_count,
 	.get_dsc_count = sde_kms_get_dsc_count,
+#if defined(CONFIG_PXLW_IRIS)
+	.iris_operate = iris_sde_kms_iris_operate,
+#endif
 	.in_trusted_vm = sde_kms_in_trusted_vm,
 };
 

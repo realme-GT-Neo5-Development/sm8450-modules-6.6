@@ -49,7 +49,11 @@
 #define SDE_ENCODER_FRAME_EVENT_SIGNAL_RETIRE_FENCE	BIT(4)
 #define SDE_ENCODER_FRAME_EVENT_CWB_DONE		BIT(5)
 
+#ifdef OPLUS_FEATURE_DISPLAY
+#define IDLE_POWERCOLLAPSE_DURATION	(80 - 16/2)
+#else /* OPLUS_FEATURE_DISPLAY */
 #define IDLE_POWERCOLLAPSE_DURATION	(66 - 16/2)
+#endif /* OPLUS_FEATURE_DISPLAY */
 #define IDLE_POWERCOLLAPSE_IN_EARLY_WAKEUP (200 - 16/2)
 
 /* below this fps limit, timeouts are adjusted based on fps */
@@ -267,6 +271,11 @@ struct sde_encoder_virt {
 	bool idle_pc_enabled;
 	bool input_event_enabled;
 	struct mutex rc_lock;
+#if defined(CONFIG_PXLW_IRIS)
+	/* Queued by sde_encoder_disable_autorefresh_handler(): the Pixelworks
+	 * layer needs to disable autorefresh outside atomic context. */
+	struct kthread_work disable_autorefresh_work;
+#endif
 	enum sde_enc_rc_states rc_state;
 	struct kthread_delayed_work delayed_off_work;
 	struct kthread_work early_wakeup_work;
@@ -295,7 +304,40 @@ struct sde_encoder_virt {
 	bool ctl_done_supported;
 
 	unsigned long dynamic_irqs_config;
+#ifdef OPLUS_FEATURE_DISPLAY
+	struct hrtimer fakeframe_timer;
+	struct kthread_work fakeframe_work;
+	uint32_t cur_mode_hdisplay;
+	unsigned int encoder_idle_delayms;
+#endif /* OPLUS_FEATURE_DISPLAY */
 };
+
+#ifdef OPLUS_FEATURE_DISPLAY
+/**
+ * Add for backlight smooths
+ * @g_pri_bk_level: global backlight of the primary screen
+ * @g_sec_bk_level: global backlight of the secondary screen
+ */
+struct oplus_apollo_bk {
+	u32 g_pri_bk_level;
+	u32 g_sec_bk_level;
+};
+
+enum oplus_sync_method {
+	OPLUS_PREPARE_KICKOFF_METHOD = 0,
+	OPLUS_KICKOFF_METHOD,
+	OPLUS_POST_KICKOFF_METHOD,
+	OPLUS_WAIT_VSYNC_METHOD,
+	OPLUS_UNKNOW_METHOD,
+};
+
+/**
+ * sde_encoder_is_disabled - encoder is disabled
+ * @drm_enc:    Pointer to drm encoder structure
+ * @Return:     bool.
+ */
+bool sde_encoder_is_disabled(struct drm_encoder *drm_enc);
+#endif /* OPLUS_FEATURE_DISPLAY */
 
 #define to_sde_encoder_virt(x) container_of(x, struct sde_encoder_virt, base)
 
@@ -789,4 +831,26 @@ static inline int sde_encoder_register_misr_event(struct drm_encoder *drm_enc, b
 
 	return 0;
 }
+#if defined(CONFIG_PXLW_IRIS)
+/*
+ * Helpers required by the Pixelworks Iris layer, from the msm-5.10 kernel
+ * (dropped from the 6.6 QC release).
+ */
+void sde_encoder_rc_lock(struct drm_encoder *drm_enc);
+void sde_encoder_rc_unlock(struct drm_encoder *drm_enc);
+void sde_encoder_disable_autorefresh_handler(struct drm_encoder *drm_enc);
+bool sde_encoder_is_disabled(struct drm_encoder *drm_enc);
+#endif
+
+#if defined(CONFIG_PXLW_IRIS) || defined(CONFIG_PXLW_SOFT_IRIS)
+/* Panel brightness synchronisation with TE (from the msm-5.10 kernel). */
+void sde_encoder_wait_vblack(struct drm_connector *connector,
+		struct drm_encoder *drm_enc, int wait_num);
+void sde_encoder_pre_kickoff_update_panel_level(struct drm_connector *connector,
+		struct drm_encoder *drm_enc);
+void sde_encoder_post_kickoff_update_panel_level(struct drm_connector *connector);
+void sde_encoder_update_panel_level(struct drm_connector *connector,
+		struct drm_encoder *drm_enc);
+#endif
+
 #endif /* __SDE_ENCODER_H__ */

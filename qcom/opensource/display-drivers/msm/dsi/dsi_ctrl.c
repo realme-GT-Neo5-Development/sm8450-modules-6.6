@@ -22,6 +22,9 @@
 #include "dsi_panel.h"
 
 #include "sde_dbg.h"
+#if defined(CONFIG_PXLW_IRIS)
+#include "dsi_iris_api.h"
+#endif
 
 #define DSI_CTRL_DEFAULT_LABEL "MDSS DSI CTRL"
 
@@ -1293,14 +1296,34 @@ int dsi_message_validate_tx_mode(struct dsi_ctrl *dsi_ctrl,
 			DSI_CTRL_ERR(dsi_ctrl, " Cannot transfer command,ops not defined\n");
 			return -ENOTSUPP;
 		}
+#if defined(CONFIG_PXLW_IRIS)
+		if (iris_is_chip_supported()) {
+			if ((cmd_len + 4) > IRIS_CMD_SIZE) {
+				DSI_CTRL_ERR(dsi_ctrl, "Cannot transfer,size is greater than %d\n"
+						, IRIS_CMD_SIZE);
+				return -ENOTSUPP;
+			}
+		} else {
+#endif
 		if ((cmd_len + 4) > SZ_4K) {
 			DSI_CTRL_ERR(dsi_ctrl, "Cannot transfer,size is greater than 4096\n");
 			return -ENOTSUPP;
 		}
+#if defined(CONFIG_PXLW_IRIS)
+		}
+#endif
 	}
 
 	if (*flags & DSI_CTRL_CMD_FETCH_MEMORY) {
 		if ((dsi_ctrl->cmd_len + cmd_len + 4) > SZ_4K) {
+#if defined(CONFIG_PXLW_IRIS)
+			if (iris_is_chip_supported()) {
+				if ((dsi_ctrl->cmd_len + cmd_len + 4) <= IRIS_CMD_SIZE)
+					return rc;
+				DSI_CTRL_ERR(dsi_ctrl, "Cannot transfer, size is greater than %d\n"
+						, IRIS_CMD_SIZE);
+			}
+#endif
 			DSI_CTRL_ERR(dsi_ctrl, "Cannot transfer,size is greater than 4096\n");
 			return -ENOTSUPP;
 		}
@@ -1318,6 +1341,16 @@ static void dsi_configure_command_scheduling(struct dsi_ctrl *dsi_ctrl,
 
 	line_no = dsi_ctrl->host_config.common_config.dma_sched_line;
 	window = dsi_ctrl->host_config.common_config.dma_sched_window;
+#if defined(CONFIG_PXLW_IRIS)
+	/*
+	 * adjust line no for video mode panel
+	 */
+	if ((dsi_ctrl->host_config.panel_mode == DSI_OP_VIDEO_MODE) &&
+		iris_is_chip_supported()) {
+		line_no = iris_schedule_line_no_get();
+		pr_debug("line_no: %d\n", line_no);
+	}
+#endif
 
 	SDE_EVT32(dsi_ctrl->cell_index, SDE_EVTLOG_FUNC_ENTRY, line_no, window);
 	/*
@@ -1431,6 +1464,10 @@ static void dsi_kickoff_msg_tx(struct dsi_ctrl *dsi_ctrl,
 
 	if (flags & DSI_CTRL_CMD_DEFER_TRIGGER) {
 		if (flags & DSI_CTRL_CMD_FETCH_MEMORY) {
+#if defined(CONFIG_PXLW_IRIS)
+			if (iris_is_chip_supported())
+				msm_gem_sync(dsi_ctrl->tx_cmd_buf);
+#endif
 			if (flags & DSI_CTRL_CMD_NON_EMBEDDED_MODE) {
 				dsi_hw_ops.kickoff_command_non_embedded_mode(
 							&dsi_ctrl->hw,
@@ -1515,6 +1552,9 @@ static int dsi_message_tx(struct dsi_ctrl *dsi_ctrl, struct dsi_cmd_desc *cmd_de
 	msg = &cmd_desc->msg;
 	flags = &cmd_desc->ctrl_flags;
 
+#if defined(CONFIG_PXLW_IRIS)
+	iris_dsi_ctrl_dump_desc_cmd(dsi_ctrl, msg);
+#endif
 	/* Validate the mode before sending the command */
 	rc = dsi_message_validate_tx_mode(dsi_ctrl, msg->tx_len, flags);
 	if (rc) {
@@ -1589,6 +1629,12 @@ static int dsi_message_tx(struct dsi_ctrl *dsi_ctrl, struct dsi_cmd_desc *cmd_de
 
 		cmdbuf = (u8 *)(dsi_ctrl->vaddr);
 
+#if defined(CONFIG_PXLW_IRIS)
+		if (!iris_is_chip_supported())
+			msm_gem_sync(dsi_ctrl->tx_cmd_buf);
+#else
+		msm_gem_sync(dsi_ctrl->tx_cmd_buf);
+#endif
 		for (cnt = 0; cnt < length; cnt++)
 			cmdbuf[dsi_ctrl->cmd_len + cnt] = buffer[cnt];
 
@@ -1826,6 +1872,10 @@ static int dsi_message_rx(struct dsi_ctrl *dsi_ctrl, struct dsi_cmd_desc *cmd_de
 
 	/* parse the data read from panel */
 	cmd = buff[header_offset];
+#if defined(CONFIG_PXLW_IRIS)
+	if (iris_is_chip_supported())
+		cmd &= 0x3F;
+#endif
 	switch (cmd) {
 	case MIPI_DSI_RX_ACKNOWLEDGE_AND_ERROR_REPORT:
 		DSI_CTRL_ERR(dsi_ctrl, "Rx ACK_ERROR 0x%x\n", cmd);
@@ -1923,6 +1973,23 @@ static int dsi_disable_ulps(struct dsi_ctrl *dsi_ctrl)
 
 	return rc;
 }
+
+#ifdef OPLUS_FEATURE_DISPLAY
+int dsi_ctrl_override_dma_cmd_trig(struct dsi_ctrl *dsi_ctrl,
+		enum dsi_trigger_type type)
+{
+	if (!dsi_ctrl || type == DSI_TRIGGER_MAX) {
+		DSI_CTRL_ERR(dsi_ctrl, "Invalid params\n");
+		return -EINVAL;
+	}
+
+	mutex_lock(&dsi_ctrl->ctrl_lock);
+	dsi_ctrl->host_config.common_config.force_dma_cmd_trigger = type;
+	mutex_unlock(&dsi_ctrl->ctrl_lock);
+
+	return 0;
+}
+#endif /* OPLUS_FEATURE_DISPLAY */
 
 void dsi_ctrl_toggle_error_interrupt_status(struct dsi_ctrl *dsi_ctrl, bool enable)
 {

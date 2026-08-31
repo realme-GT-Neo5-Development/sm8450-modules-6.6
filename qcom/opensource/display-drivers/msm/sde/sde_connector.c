@@ -22,6 +22,16 @@
 #include "sde_vm.h"
 #include <drm/drm_probe_helper.h>
 #include <linux/version.h>
+#if defined(CONFIG_PXLW_IRIS)
+#include "dsi_iris_api.h"
+#endif
+#if defined(CONFIG_PXLW_IRIS) || defined(CONFIG_PXLW_SOFT_IRIS)
+extern int iris_backlight_update;
+#endif
+
+#ifdef OPLUS_FEATURE_DISPLAY_ONSCREENFINGERPRINT
+#include "../oplus/oplus_onscreenfingerprint.h"
+#endif /* OPLUS_FEATURE_DISPLAY_ONSCREENFINGERPRINT */
 
 #define BL_NODE_NAME_SIZE 32
 #define HDR10_PLUS_VSIF_TYPE_CODE      0x81
@@ -836,6 +846,14 @@ static int _sde_connector_update_bl_scale(struct sde_connector *c_conn)
 
 	return rc;
 }
+
+#ifdef OPLUS_FEATURE_DISPLAY
+int _sde_connector_update_bl_scale_(struct sde_connector *c_conn)
+{
+	return _sde_connector_update_bl_scale(c_conn);
+}
+EXPORT_SYMBOL(_sde_connector_update_bl_scale_);
+#endif /* OPLUS_FEATURE_DISPLAY */
 
 void sde_connector_set_colorspace(struct sde_connector *c_conn)
 {
@@ -1747,6 +1765,10 @@ static int sde_connector_atomic_set_property(struct drm_connector *connector,
 	struct sde_connector *c_conn;
 	struct sde_connector_state *c_state;
 	int idx, rc;
+#if defined(CONFIG_PXLW_IRIS) || defined(CONFIG_PXLW_SOFT_IRIS)
+	struct sde_connector_sync_data sync_data;
+	unsigned long flags;
+#endif
 
 	if (!connector || !state || !property) {
 		SDE_ERROR("invalid argument(s), conn %pK, state %pK, prp %pK\n",
@@ -1840,9 +1862,49 @@ static int sde_connector_atomic_set_property(struct drm_connector *connector,
 		if (val == SDE_MODE_DPMS_OFF)
 			memset(&c_conn->previous_misr_sign, 0, sizeof(struct sde_misr_sign));
 		break;
+#if defined(CONFIG_PXLW_IRIS) || defined(CONFIG_PXLW_SOFT_IRIS)
+	case CONNECTOR_PROP_PANEL_LEVEL:
+		/*
+		 * val bits list
+		 * 0  - 13 bits for backlight
+		 * 14 - 27 bits for delay
+		 * 28 - 30 bits for wait vsync flag
+		 */
+		if (iris_is_chip_supported() || iris_is_softiris_supported()) {
+			memset(&sync_data, 0, sizeof(sync_data));
+			sync_data.panel_bl_dirty = true;
+			sync_data.panel_bl = val & 0x3FFF;
+			sync_data.bl_sync_dly = ((val >> 14) & 0x3FFF) * 100;
+			sync_data.wait_vsync_flag = (val >> 28) & 0x7;
+
+			spin_lock_irqsave(&c_conn->bl_spinlock, flags);
+			memcpy(&c_conn->sync_data[c_conn->bl_wr_index], &sync_data, sizeof(sync_data));
+			c_conn->bl_wr_index = (c_conn->bl_wr_index + 1) % SDE_CONNECTOR_SYNC_DATA_NUM;
+			iris_backlight_update--;
+			spin_unlock_irqrestore(&c_conn->bl_spinlock, flags);
+		}
+		break;
+	case CONNECTOR_PROP_IRIS_SET_METADATA:
+		if (iris_is_chip_supported() || iris_is_softiris_supported())
+			iris_sde_connector_set_metadata(val);
+		break;
+#endif
 	default:
 		break;
 	}
+
+#ifdef OPLUS_FEATURE_DISPLAY_ONSCREENFINGERPRINT
+	/*
+	 * Pass every connector property to the under-display fingerprint (OFP)
+	 * driver, which reads the "hbm_enable" bits (DIM_LAYER /
+	 * FINGERPRESS_LAYER / ICON_LAYER / AOD_LAYER) to drive its HBM state
+	 * machine. From the OnePlus sm8750 (sun) 6.6 release; the OPlus 5.10
+	 * vendor code has the same block.
+	 */
+	if (oplus_ofp_is_supported()) {
+		oplus_ofp_property_update(c_conn, c_state, idx, val);
+	}
+#endif /* OPLUS_FEATURE_DISPLAY_ONSCREENFINGERPRINT */
 
 	/* check for custom property handling */
 	if (!rc && c_conn->ops.set_property) {
@@ -3210,6 +3272,24 @@ static int _sde_connector_install_properties(struct drm_device *dev,
 			CONNECTOR_PROP_AUTOREFRESH);
 
 	if (connector_type == DRM_MODE_CONNECTOR_DSI) {
+#ifdef OPLUS_FEATURE_DISPLAY_ONSCREENFINGERPRINT
+		/*
+		 * Connector property through which the compositor reports the
+		 * under-display fingerprint layer state (DIM_LAYER,
+		 * FINGERPRESS_LAYER, ICON_LAYER, AOD_LAYER; see
+		 * oplus_onscreenfingerprint.c). The OFP driver uses it to switch the
+		 * panel into HBM to illuminate the finger; without it the optical
+		 * sensor sees a black image.
+		 *
+		 * From the OnePlus sm8750 (sun) 6.6 release; the OPlus 5.10 vendor
+		 * code has the same block.
+		 */
+		if (oplus_ofp_is_supported()) {
+			msm_property_install_range(&c_conn->property_info, "hbm_enable",
+					0x0, 0, ~0, 0, CONNECTOR_PROP_HBM_ENABLE);
+		}
+#endif /* OPLUS_FEATURE_DISPLAY_ONSCREENFINGERPRINT */
+
 		_sde_connector_install_qsync_properties(sde_kms, c_conn, dsi_display, display_info);
 
 		if (test_bit(SDE_FEATURE_EPT, sde_kms->catalog->features))
@@ -3246,6 +3326,15 @@ static int _sde_connector_install_properties(struct drm_device *dev,
 		msm_property_install_enum(&c_conn->property_info, "frame_trigger_mode",
 			0, 0, e_frame_trigger_mode, ARRAY_SIZE(e_frame_trigger_mode), 0,
 			CONNECTOR_PROP_CMD_FRAME_TRIGGER_MODE);
+
+#if defined(CONFIG_PXLW_IRIS) || defined(CONFIG_PXLW_SOFT_IRIS)
+	msm_property_install_range(&c_conn->property_info, "panel_level",
+		0x0, 0, U64_MAX, 0,
+		CONNECTOR_PROP_PANEL_LEVEL);
+	msm_property_install_range(&c_conn->property_info, "iris_set_metadata",
+		0x0, 0, U64_MAX, 0,
+		CONNECTOR_PROP_IRIS_SET_METADATA);
+#endif
 
 	msm_property_install_range(&c_conn->property_info, "bl_scale",
 		0x0, 0, MAX_BL_SCALE_LEVEL, MAX_BL_SCALE_LEVEL,
@@ -3333,6 +3422,9 @@ struct drm_connector *sde_connector_init(struct drm_device *dev,
 		goto error_free_conn;
 
 	spin_lock_init(&c_conn->event_lock);
+#if defined(CONFIG_PXLW_IRIS) || defined(CONFIG_PXLW_SOFT_IRIS)
+	spin_lock_init(&c_conn->bl_spinlock);
+#endif
 
 	c_conn->panel = panel;
 	c_conn->connector_type = connector_type;
@@ -3585,3 +3677,92 @@ bool sde_connector_is_line_insertion_supported(struct sde_connector *sde_conn)
 
 	return display->panel->host_config.line_insertion_enable;
 }
+
+#if defined(CONFIG_PXLW_IRIS) || defined(CONFIG_PXLW_SOFT_IRIS)
+static int _sde_connector_update_panel_level(struct sde_connector *c_conn)
+{
+	struct dsi_display *dsi_display;
+	struct dsi_backlight_config *bl_config;
+	struct backlight_device *bd;
+	struct sde_connector_sync_data sync_data;
+	u32 panel_bl;
+	unsigned long flags;
+	int rc = 0;
+
+	if (!c_conn) {
+		SDE_ERROR("Invalid params sde_connector null\n");
+		return -EINVAL;
+	}
+
+	dsi_display = c_conn->display;
+	if (!dsi_display || !dsi_display->panel) {
+		SDE_ERROR("Invalid params(s) dsi_display %pK, panel %pK\n",
+			dsi_display, ((dsi_display) ? dsi_display->panel : NULL));
+		return -EINVAL;
+	}
+
+	spin_lock_irqsave(&c_conn->bl_spinlock, flags);
+	memcpy(&sync_data, &c_conn->sync_data[c_conn->bl_rd_index], sizeof(sync_data));
+	spin_unlock_irqrestore(&c_conn->bl_spinlock, flags);
+
+	panel_bl = sync_data.panel_bl;
+
+	bl_config = &dsi_display->panel->bl_config;
+
+	if (!c_conn->allow_bl_update) {
+		c_conn->unset_bl_level = bl_config->bl_level;
+		return 0;
+	}
+	bl_config->bl_level = panel_bl;
+	if (c_conn->unset_bl_level)
+		bl_config->bl_level = c_conn->unset_bl_level;
+
+	SDE_DEBUG("panel_level= %u", bl_config->bl_level);
+	rc = c_conn->ops.set_backlight(&c_conn->base,
+				dsi_display, bl_config->bl_level);
+	c_conn->unset_bl_level = 0;
+
+	bd = c_conn->bl_device;
+	if (bd) {
+		bd->props.brightness = bl_config->bl_level;
+		SDE_DEBUG("bl_level: %u\n", bl_config->bl_level);
+	} else
+		SDE_ERROR("Failed to get raw backlight\n");
+	return rc;
+}
+
+int sde_connector_update_panel_level(struct sde_connector *c_conn)
+{
+	int ret = 0;
+	bool panel_bl_dirty;
+	unsigned long flags;
+	u32 delta_us, delay = 0, bl_sync_dly;
+	ktime_t now_ktime, rd_ptr_ktime;
+	struct sde_connector_sync_data sync_data;
+
+	if (!c_conn) {
+		SDE_ERROR("Invalid connector\n");
+		return -EINVAL;
+	}
+
+	spin_lock_irqsave(&c_conn->bl_spinlock, flags);
+	memcpy(&sync_data, &c_conn->sync_data[c_conn->bl_rd_index], sizeof(sync_data));
+	rd_ptr_ktime = c_conn->rd_ptr_ktime;
+	spin_unlock_irqrestore(&c_conn->bl_spinlock, flags);
+
+	panel_bl_dirty = sync_data.panel_bl_dirty;
+	bl_sync_dly = sync_data.bl_sync_dly;
+
+	now_ktime = ktime_get();
+	delta_us = ktime_to_us(ktime_sub(now_ktime, rd_ptr_ktime));
+	if (bl_sync_dly > delta_us) {
+		delay = bl_sync_dly - delta_us;
+		usleep_range(delay, delay + 1);
+	}
+
+	if (panel_bl_dirty)
+		_sde_connector_update_panel_level(c_conn);
+
+	return ret;
+}
+#endif

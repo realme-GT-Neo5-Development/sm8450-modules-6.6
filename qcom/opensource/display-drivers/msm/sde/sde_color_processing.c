@@ -10,6 +10,10 @@
 #include <linux/string.h>
 #include <drm/msm_drm_pp.h>
 #include "sde_color_processing.h"
+
+#ifdef OPLUS_FEATURE_DISPLAY_ONSCREENFINGERPRINT
+#include "../oplus/oplus_onscreenfingerprint.h"
+#endif /* OPLUS_FEATURE_DISPLAY_ONSCREENFINGERPRINT */
 #include "sde_kms.h"
 #include "sde_crtc.h"
 #include "sde_hw_dspp.h"
@@ -212,6 +216,18 @@ typedef int (*feature_wrapper)(struct sde_hw_dspp *hw_dspp,
 				   struct sde_hw_cp_cfg *hw_cfg,
 				   struct sde_crtc *hw_crtc);
 
+#if defined(CONFIG_PXLW_IRIS)
+#include "dsi_iris_api.h"
+
+#if defined(CONFIG_PXLW_IRIS)
+/* 5.10: sde_color_processing.c:152-154. PQ state of the Pixelworks layer.
+ * The 5.10 patch put them inside a function; they must be at file scope. */
+static int iris_pq_ops = SDE_CP_CRTC_DSPP_MAX;
+static bool iris_pq_dirty;
+struct sde_cp_node *iris_prop_node[SDE_CP_CRTC_DSPP_MAX] = {};
+u32 iris_pq_disable;
+#endif
+#endif
 
 static struct sde_kms *get_kms(struct drm_crtc *crtc)
 {
@@ -253,10 +269,29 @@ static int _set_dspp_pcc_feature(struct sde_hw_dspp *hw_dspp,
 {
 	int ret = 0;
 
+#ifdef OPLUS_FEATURE_DISPLAY_ONSCREENFINGERPRINT
+	/*
+	 * While the under-display fingerprint layers are visible PCC is
+	 * bypassed (payload = NULL) so the sensor sees an unprocessed image;
+	 * the call with `false` after programming restores the saved payload.
+	 * From the OPlus vendor _set_dspp_pcc_feature().
+	 */
+	if (oplus_ofp_is_supported()) {
+		oplus_ofp_set_dspp_pcc_feature(hw_cfg, hw_crtc, true);
+	}
+#endif /* OPLUS_FEATURE_DISPLAY_ONSCREENFINGERPRINT */
+
 	if (!hw_dspp || !hw_dspp->ops.setup_pcc)
 		ret = -EINVAL;
 	else
 		hw_dspp->ops.setup_pcc(hw_dspp, hw_cfg);
+
+#ifdef OPLUS_FEATURE_DISPLAY_ONSCREENFINGERPRINT
+	if (oplus_ofp_is_supported()) {
+		oplus_ofp_set_dspp_pcc_feature(hw_cfg, hw_crtc, false);
+	}
+#endif /* OPLUS_FEATURE_DISPLAY_ONSCREENFINGERPRINT */
+
 	return ret;
 }
 
@@ -1430,6 +1465,12 @@ void sde_cp_crtc_init(struct drm_crtc *crtc)
 	INIT_LIST_HEAD(&sde_crtc->ltm_buf_busy);
 	sde_crtc->disable_pending_cp = false;
 	sde_cp_crtc_disable(crtc);
+#if defined(CONFIG_PXLW_IRIS)
+	if (iris_is_chip_supported()) {
+		iris_pq_ops = SDE_CP_CRTC_DSPP_MAX;
+		memset(iris_prop_node, 0, sizeof(iris_prop_node));
+	}
+#endif
 }
 
 static void _sde_cp_crtc_install_immutable_property(struct drm_crtc *crtc,
@@ -1835,10 +1876,20 @@ static void _sde_cp_crtc_commit_feature(struct sde_cp_node *prop_node,
 			hw_cfg.displayh = num_mixers * hw_lm->cfg.out_width;
 			hw_cfg.displayv = hw_lm->cfg.out_height;
 
+#if defined(CONFIG_PXLW_IRIS)
+			if (iris_is_chip_supported() && (iris_pq_ops == SDE_CP_CRTC_DSPP_PCC))
+				hw_cfg.payload = NULL;
+#endif
 			ret = commit_feature(hw_dspp, &hw_cfg, sde_crtc);
 			if (ret)
 				break;
 		}
+#if defined(CONFIG_PXLW_IRIS)
+		if (iris_is_chip_supported()) {
+			if (!ret)
+				iris_prop_node[prop_node->feature] = prop_node;
+		}
+#endif
 
 		if (ret) {
 			DRM_ERROR("failed to %s feature %d\n",
@@ -1846,6 +1897,15 @@ static void _sde_cp_crtc_commit_feature(struct sde_cp_node *prop_node,
 				prop_node->feature);
 			goto disable_feature;
 		}
+#if defined(CONFIG_PXLW_IRIS)
+		if (iris_is_chip_supported()) {
+			if (iris_pq_dirty) {
+				DRM_DEBUG_DRIVER("Not update list to feature %d\n",
+					prop_node->feature);
+				return;
+			}
+		}
+#endif
 	}
 
 	if (feature_enabled) {
@@ -1879,6 +1939,14 @@ disable_feature:
 			hw_cfg.mixer_info = hw_lm;
 			hw_cfg.displayh = num_mixers * hw_lm->cfg.out_width;
 			hw_cfg.displayv = hw_lm->cfg.out_height;
+
+#ifdef OPLUS_FEATURE_DISPLAY_ONSCREENFINGERPRINT
+			if (oplus_ofp_is_supported()) {
+				if (prop_node->feature == SDE_CP_CRTC_DSPP_GAMUT) {
+					oplus_ofp_bypass_dspp_gamut(&hw_cfg, sde_crtc);
+				}
+			}
+#endif /* OPLUS_FEATURE_DISPLAY_ONSCREENFINGERPRINT */
 
 			ret = disable_handler(hw_dspp, &hw_cfg, sde_crtc);
 		}
@@ -2322,6 +2390,18 @@ void sde_cp_crtc_apply_properties(struct drm_crtc *crtc)
 	_sde_cp_flush_properties(crtc);
 	mutex_lock(&sde_crtc->crtc_cp_lock);
 	_sde_clear_ltm_merge_mode(sde_crtc);
+#if defined(CONFIG_PXLW_IRIS)
+	if (iris_is_chip_supported()) {
+		iris_pq_dirty = false;
+		if (iris_pq_disable == 1 && iris_pq_ops == SDE_CP_CRTC_DSPP_MAX) {
+			iris_pq_ops = SDE_CP_CRTC_DSPP_PCC;
+			iris_pq_dirty = true;
+		} else if (iris_pq_disable == 0 && iris_pq_ops == SDE_CP_CRTC_DSPP_PCC) {
+			iris_pq_ops = SDE_CP_CRTC_DSPP_MAX;
+			iris_pq_dirty = true;
+		}
+	}
+#endif
 
 	disable_pending_cp = sde_crtc->disable_pending_cp;
 	sde_crtc->disable_pending_cp = false;
@@ -2330,6 +2410,16 @@ void sde_cp_crtc_apply_properties(struct drm_crtc *crtc)
 			list_empty(&sde_crtc->ad_active) &&
 			list_empty(&sde_crtc->cp_active_list)) {
 		DRM_DEBUG_DRIVER("all lists are empty\n");
+#if defined(CONFIG_PXLW_IRIS)
+		if (iris_is_chip_supported()) {
+			if (!iris_pq_dirty)
+				goto exit;
+		} else {
+			goto exit;
+		}
+#else
+		goto exit;
+#endif
 		goto exit;
 	}
 
@@ -2359,6 +2449,22 @@ void sde_cp_crtc_apply_properties(struct drm_crtc *crtc)
 		_sde_cp_ad_set_prop(sde_crtc, AD_IPC_RESET);
 		set_dspp_flush = true;
 	}
+#if defined(CONFIG_PXLW_IRIS)
+	if (iris_is_chip_supported() && iris_pq_dirty) {
+		for (i = 0; i < SDE_CP_CRTC_DSPP_MAX; i++) {
+			prop_node = iris_prop_node[i];
+			if (prop_node == NULL)
+				continue;
+			_sde_cp_crtc_commit_feature(prop_node, sde_crtc);
+			/* Set the flush flag to true */
+			if (prop_node->is_dspp_feature)
+				set_dspp_flush = true;
+			else
+				set_lm_flush = true;
+		}
+		iris_pq_dirty = false;
+	}
+#endif
 
 	list_for_each_entry_safe(prop_node, n, &sde_crtc->ad_dirty,
 			cp_dirty_list) {
@@ -2870,6 +2976,12 @@ void sde_cp_crtc_mark_features_dirty(struct drm_crtc *crtc)
 		_sde_cp_update_list(prop_node, sde_crtc, true);
 		list_del_init(&prop_node->cp_active_list);
 	}
+#if defined(CONFIG_PXLW_IRIS)
+	if (iris_is_chip_supported()) {
+		iris_pq_ops = SDE_CP_CRTC_DSPP_MAX;
+		memset(iris_prop_node, 0, sizeof(iris_prop_node));
+	}
+#endif
 
 	list_for_each_entry_safe(prop_node, n, &sde_crtc->ad_active,
 				 cp_active_list) {
@@ -3120,6 +3232,23 @@ static void _dspp_sixzone_install_property(struct drm_crtc *crtc)
 	version = catalog->dspp[0].sblk->sixzone.version >> 16;
 	switch (version) {
 	case 1:
+		/*
+		 * ABI: in 6.6 struct drm_msm_sixzone grew fields used only by
+		 * SIXZONE v2 hardware (sat_adjust_p0/p1, curve_p2), 4648 bytes in
+		 * total. The v1.7 block on cape/waipio only reads curve[]
+		 * (reg_dmav1_setup_dspp_sixzonev17), and the 5.10 composer HAL
+		 * sends the older 3104-byte blob, which would be rejected as
+		 * "invalid blob len". For v1.7 advertise the pre-extension layout:
+		 * everything up to the end of curve[], padded to 8 bytes as the
+		 * compiler does for a struct starting with a __u64.
+		 */
+		snprintf(feature_name, ARRAY_SIZE(feature_name), "%s%d",
+			"SDE_DSPP_PA_SIXZONE_V", version);
+		_sde_cp_crtc_install_blob_property(crtc, feature_name,
+			SDE_CP_CRTC_DSPP_SIXZONE,
+			ALIGN(offsetof(struct drm_msm_sixzone, sat_adjust_p0),
+			      sizeof(__u64)));
+		break;
 	case 2:
 		snprintf(feature_name, ARRAY_SIZE(feature_name), "%s%d",
 			"SDE_DSPP_PA_SIXZONE_V", version);
@@ -4586,10 +4715,13 @@ static void _sde_cp_ltm_hist_interrupt_cb(void *arg, int irq_idx)
 	sde_ltm_get_phase_info(&hw_cfg, &phase);
 	ltm_data->display_h = hw_cfg.displayh;
 	ltm_data->display_v = hw_cfg.displayv;
+	/*
+	 * LTM_BLOCK_SIZE is 2 to match the 5.10 userspace ABI, and waipio has
+	 * two LTM blocks; indices 2 and 3 only exist on newer SoCs. The msm-5.10
+	 * kernel also writes only [0] and [1].
+	 */
 	ltm_data->init_h[0] = phase.init_h[LTM_0];
 	ltm_data->init_h[1] = phase.init_h[LTM_1];
-	ltm_data->init_h[2] = phase.init_h[LTM_2];
-	ltm_data->init_h[3] = phase.init_h[LTM_3];
 	ltm_data->init_v = phase.init_v;
 	ltm_data->inc_v = phase.inc_v;
 	ltm_data->inc_h = phase.inc_h;
@@ -5200,6 +5332,52 @@ void sde_cp_set_skip_blend_plane_info(struct drm_crtc *drm_crtc,
 	mutex_unlock(&crtc->crtc_cp_lock);
 }
 
+#ifdef OPLUS_FEATURE_DISPLAY_ONSCREENFINGERPRINT
+/*
+ * Force colour correction to be reprogrammed after a fingerprint HBM state
+ * change. PCC is bypassed while the fingerprint layers are visible (see
+ * _set_dspp_pcc_feature()); once they disappear nothing marks those blocks
+ * for reprogramming, leaving the colours shifted. Move the PCC and gamut
+ * entries from the active list to the dirty list so they are programmed on
+ * the next frame.
+ *
+ * From the OnePlus sm8750 (sun) 6.6 release.
+ */
+void oplus_sde_cp_crtc_pcc_change(struct drm_crtc *crtc_drm)
+{
+	struct sde_cp_node *prop_node = NULL, *n = NULL;
+	struct sde_crtc *crtc;
+
+	if (!crtc_drm) {
+		DRM_ERROR("invalid crtc handle");
+		return;
+	}
+
+	crtc = to_sde_crtc(crtc_drm);
+	mutex_lock(&crtc->crtc_cp_lock);
+	list_for_each_entry_safe(prop_node, n, &crtc->cp_feature_list, cp_feature_list) {
+		/* gamut needs refreshing too, not only PCC */
+		if (prop_node->feature != SDE_CP_CRTC_DSPP_PCC
+				&& prop_node->feature != SDE_CP_CRTC_DSPP_GAMUT)
+			continue;
+
+		if (_sde_cp_feature_in_dirtylist(prop_node->feature,
+						&crtc->cp_dirty_list))
+			continue;
+
+		if (_sde_cp_feature_in_activelist(prop_node->feature,
+						&crtc->cp_active_list)) {
+			_sde_cp_update_list(prop_node, crtc, true);
+			list_del_init(&prop_node->cp_active_list);
+			continue;
+		}
+
+		_sde_cp_update_list(prop_node, crtc, true);
+	}
+	mutex_unlock(&crtc->crtc_cp_lock);
+}
+#endif /* OPLUS_FEATURE_DISPLAY_ONSCREENFINGERPRINT */
+
 void _sde_cp_mark_active_dirty_internal(struct sde_crtc *crtc)
 {
 	struct sde_cp_node *prop_node;
@@ -5222,3 +5400,4 @@ void _sde_cp_mark_active_dirty_internal(struct sde_crtc *crtc)
 	}
 	mutex_unlock(&crtc->crtc_cp_lock);
 }
+

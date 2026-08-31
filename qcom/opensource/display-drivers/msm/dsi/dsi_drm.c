@@ -14,6 +14,9 @@
 #include "dsi_drm.h"
 #include "sde_trace.h"
 #include "sde_dbg.h"
+#if defined(CONFIG_PXLW_IRIS)
+#include "dsi_iris_api.h"
+#endif
 #include "msm_drv.h"
 #include "sde_encoder.h"
 
@@ -266,6 +269,10 @@ static void dsi_bridge_enable(struct drm_bridge *bridge)
 
 	if (display && display->drm_conn) {
 		sde_connector_helper_bridge_enable(display->drm_conn);
+#if defined(CONFIG_PXLW_IRIS)
+		if (iris_is_chip_supported())
+			iris_ioctl_unlock();
+#endif
 		if (display->poms_pending) {
 			display->poms_pending = false;
 			sde_connector_schedule_status_work(display->drm_conn,
@@ -301,6 +308,10 @@ static void dsi_bridge_disable(struct drm_bridge *bridge)
 						&conn_state->msm_mode);
 
 		sde_connector_helper_bridge_disable(display->drm_conn);
+#if defined(CONFIG_PXLW_IRIS)
+		if (iris_is_chip_supported())
+			iris_ioctl_lock();
+#endif
 	}
 
 	rc = dsi_display_pre_disable(c_bridge->display);
