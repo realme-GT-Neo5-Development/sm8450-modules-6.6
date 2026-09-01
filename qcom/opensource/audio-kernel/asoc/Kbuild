@@ -60,6 +60,14 @@ ifeq ($(KERNEL_BUILD), 0)
 	ifeq ($(CONFIG_ARCH_WAIPIO), y)
 		include $(AUDIO_ROOT)/config/waipioauto.conf
 		INCS    +=  -include $(AUDIO_ROOT)/config/waipioautoconf.h
+		# FORWARDPORT: without this CONFIG_AUDIO_EXTEND_DRV is undefined and
+		# the extend_codec_i2s_be_dailinks() call in waipio.c is silently
+		# compiled out: audio_extend_dlkm loads but is never used, the MI2S
+		# links get no amplifier and there is no sound. `-include` (not
+		# `include`) so a missing file does not break targets without the
+		# OPlus layer.
+		-include $(AUDIO_ROOT)/oplus/config/opluswaipioauto.conf
+		INCS    +=  -include $(AUDIO_ROOT)/oplus/config/opluswaipioautoconf.h
 	endif
 	ifeq ($(CONFIG_ARCH_PARROT), y)
 		include $(AUDIO_ROOT)/config/waipioauto.conf
