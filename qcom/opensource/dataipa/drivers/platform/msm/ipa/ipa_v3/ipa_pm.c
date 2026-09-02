@@ -1256,6 +1256,8 @@ int ipa_pm_handle_suspend(u32 pipe_bitmask, u32 pipe_arr_idx)
 	int i;
 	struct ipa_pm_client *client;
 	bool client_notified[IPA_PM_MAX_CLIENTS] = { false };
+	struct ipa_pm_client *to_notify[IPA_PM_MAX_CLIENTS];
+	int n_notify = 0;
 	u32 pipe_add;
 	u32 max_pipes;
 	enum ipa_client_type type;
@@ -1276,19 +1278,52 @@ int ipa_pm_handle_suspend(u32 pipe_bitmask, u32 pipe_arr_idx)
 	for (i = 0; i < IPA_EP_PER_REG && (i + pipe_add) < max_pipes; i++) {
 		if (pipe_bitmask & (1 << i)) {
 			type = ipa3_get_client_by_pipe(i + pipe_add);
+			/*
+			 * ipa3_get_client_by_pipe() returns IPA_CLIENT_MAX
+			 * when the pipe has no mapping in ipa3_ep_mapping[].
+			 * Using that value reads past ipa_clients_strings[]
+			 * (hence a misleading "IPA_CLIENT_TEST_CONS" in the
+			 * log) and indexes clients_by_pipe[] for a nonexistent
+			 * pipe, yielding a potentially stale pointer that is
+			 * then called through client->callback.
+			 */
+			if (type >= IPA_CLIENT_MAX) {
+				IPA_PM_ERR("pipe %u has no client - skipping\n",
+						i + pipe_add);
+				continue;
+			}
 			IPA_PM_ERR("Client %s woke up the system\n",
 					ipa_clients_strings[type]);
 			client = ipa_pm_ctx->clients_by_pipe[i + pipe_add];
-			if (client && !client_notified[client->hdl]) {
-				if (client->callback) {
-					client->callback(client->callback_params
-						, IPA_PM_REQUEST_WAKEUP);
-					client_notified[client->hdl] = true;
-				}
+			if (client && client->callback &&
+					client->hdl < IPA_PM_MAX_CLIENTS &&
+					!client_notified[client->hdl]) {
+				client_notified[client->hdl] = true;
+				to_notify[n_notify++] = client;
 			}
 		}
 	}
 	mutex_unlock(&ipa_pm_ctx->client_mutex);
+
+	/*
+	 * Invoke the callbacks WITHOUT client_mutex held.
+	 *
+	 * For IPA_CLIENT_APPS_WAN_CONS, ipa_pm_sys_pipe_cb() does
+	 * IPA_ACTIVE_CLIENTS_INC_SPECIAL() + usleep_range(), i.e. it votes
+	 * for the IPA clocks and sleeps. The clock vote takes its own locks,
+	 * so calling it under client_mutex creates an AB-BA deadlock with a
+	 * path that holds the clock locks and waits for client_mutex.
+	 *
+	 * The mutex protects clients_by_pipe[], not the call itself, so the
+	 * clients are collected under the lock and notified after it is
+	 * released. Without this the device hangs a few seconds after the
+	 * modem registers on the network, right after
+	 * "Client %s woke up the system" is logged.
+	 */
+	for (i = 0; i < n_notify; i++)
+		to_notify[i]->callback(to_notify[i]->callback_params,
+				IPA_PM_REQUEST_WAKEUP);
+
 	return 0;
 }
 
