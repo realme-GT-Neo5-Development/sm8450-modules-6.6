@@ -187,6 +187,14 @@ struct synx_handle_coredata {
 struct synx_client {
 	u32 type;
 	bool active;
+	/*
+	 * Session created by open() without SYNX_INITIALIZE, i.e. the client
+	 * speaks the v1 (5.10) ABI. Needed where the struct size does not
+	 * tell the versions apart: synx_bind and synx_bind_v2 are both 24 B
+	 * but lay out the fields differently (v1: type@8, id@16; v2: id@8,
+	 * type@16).
+	 */
+	bool uapi_v1;
 	struct synx_device *device;
 	char name[SYNX_OBJ_NAME_LEN];
 	u64 id;

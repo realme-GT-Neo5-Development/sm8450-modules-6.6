@@ -686,7 +686,27 @@ void synx_signal_handler(struct work_struct *cb_dispatch)
 	}
 
 	mutex_lock(&synx_obj->obj_lock);
-	if (signal_cb->flag & SYNX_SIGNAL_FROM_IPC &&
+	/*
+	 * SYNX_SIGNAL_FROM_CALLBACK must signal the fence just like
+	 * SYNX_SIGNAL_FROM_IPC.
+	 *
+	 * Otherwise a callback from an external object (bound to CSL/cam_sync)
+	 * does nothing: the first branch is skipped because the flag is not
+	 * IPC, and synx_native_signal_core() requires the object to no longer
+	 * be ACTIVE. The object stays ACTIVE, the dma_fence is never signaled
+	 * and waiters (e.g. EVA) time out.
+	 *
+	 * 5.10 did this directly in synx_external_callback():
+	 *     rc = synx_signal_fence(synx_obj, status, true);
+	 *     if (!rc) synx_signal_core(synx_obj, status, true, sync_obj);
+	 * With the status no longer ACTIVE, the branch below then calls
+	 * synx_native_signal_core() with ext_sync_id.
+	 *
+	 * Note: this is a change in the synx core, not in the v1 compat layer;
+	 * it affects every SYNX_BIND user.
+	 */
+	if (signal_cb->flag &
+			(SYNX_SIGNAL_FROM_IPC | SYNX_SIGNAL_FROM_CALLBACK) &&
 		synx_util_get_object_status(synx_obj) == SYNX_STATE_ACTIVE) {
 		if (synx_util_is_merged_object(synx_obj))
 			rc = synx_native_signal_merged_fence(synx_obj, status);
@@ -2199,8 +2219,181 @@ static int synx_handle_initialize(struct synx_private_ioctl_arg *k_ioctl,
 		return -SYNX_INVALID;
 	}
 
+	/* an explicit SYNX_INITIALIZE means the client speaks the v2 ABI */
+	((struct synx_client *)(*session))->uapi_v1 = false;
+
 	return SYNX_SUCCESS;
 
+}
+
+/*
+ * Compatibility layer for the synx v1 UAPI (5.10).
+ *
+ * On 5.10 senna uses CONFIG_MSM_GLOBAL_SYNX (the synx v1 driver) and the whole
+ * userspace, including the EVA node in CamX, speaks its ABI. The 6.6
+ * synx-kernel techpack is v2 only and rejects the old payloads by struct size.
+ *
+ * ioctl numbers 0..13 are identical in both versions, so the variants are
+ * told apart by k_ioctl->size. Some structs are binary compatible:
+ *
+ *   synx_wait             == synx_wait_v2             (16 B)
+ *   synx_userpayload_info == synx_userpayload_info_v2 (40 B)
+ *
+ * The rest need field translation:
+ *
+ *   synx_info    (68 B) -> synx_create_v2 (88 B)
+ *   synx_signal   (8 B) -> synx_signal_v2 (16 B)   [SIGNAL and GETSTATUS]
+ *   synx_merge   (16 B) -> synx_merge_v2  (24 B)
+ *   synx_id_info (16 B) -> synx_import_info (32 B)
+ *
+ * v1 had no flags. The *_LOCAL_FENCE variants are used because that matches
+ * the 5.10 driver: its synx_create() allocates a plain dma_fence and does not
+ * touch any global table.
+ *
+ * Do NOT use *_GLOBAL_FENCE: it puts every operation into the IPCLite shared
+ * memory global handle table (synx_handle_conversion() in
+ * synx_native_import_handle(), next to BUG_ON(synx_obj == NULL)) and resets
+ * the device on first use by the camera pipeline.
+ *
+ * The v1 secure_key has no v2 counterpart (a global handle is its own key)
+ * and is ignored on import.
+ */
+static int synx_handle_create_v1(struct synx_private_ioctl_arg *k_ioctl,
+	struct synx_session *session)
+{
+	int result;
+	struct synx_info info;
+	struct synx_create_params params = {0};
+	u32 h_synx = 0;
+
+	if (copy_from_user(&info,
+			u64_to_user_ptr(k_ioctl->ioctl_ptr),
+			k_ioctl->size))
+		return -EFAULT;
+
+	params.h_synx = &h_synx;
+	params.name = info.name;
+	params.flags = SYNX_CREATE_LOCAL_FENCE;
+
+	result = synx_create(session, &params);
+	if (result)
+		return result;
+
+	info.synx_obj = (__s32)h_synx;
+
+	if (copy_to_user(u64_to_user_ptr(k_ioctl->ioctl_ptr),
+			&info, k_ioctl->size))
+		return -EFAULT;
+
+	return SYNX_SUCCESS;
+}
+
+static int synx_handle_signal_v1(struct synx_private_ioctl_arg *k_ioctl,
+	struct synx_session *session)
+{
+	struct synx_signal info;
+
+	if (copy_from_user(&info,
+			u64_to_user_ptr(k_ioctl->ioctl_ptr),
+			k_ioctl->size))
+		return -EFAULT;
+
+	return synx_signal(session, (u32)info.synx_obj, info.synx_state);
+}
+
+static int synx_handle_getstatus_v1(struct synx_private_ioctl_arg *k_ioctl,
+	struct synx_session *session)
+{
+	struct synx_signal info;
+
+	if (copy_from_user(&info,
+			u64_to_user_ptr(k_ioctl->ioctl_ptr),
+			k_ioctl->size))
+		return -EFAULT;
+
+	info.synx_state = synx_get_status(session, (u32)info.synx_obj);
+
+	if (copy_to_user(u64_to_user_ptr(k_ioctl->ioctl_ptr),
+			&info, k_ioctl->size))
+		return -EFAULT;
+
+	return SYNX_SUCCESS;
+}
+
+static int synx_handle_merge_v1(struct synx_private_ioctl_arg *k_ioctl,
+	struct synx_session *session)
+{
+	int result;
+	u32 *h_synxs;
+	u32 h_merged = 0;
+	struct synx_merge info;
+	struct synx_merge_params params = {0};
+
+	if (copy_from_user(&info,
+			u64_to_user_ptr(k_ioctl->ioctl_ptr),
+			k_ioctl->size))
+		return -EFAULT;
+
+	if (info.num_objs >= SYNX_MAX_OBJS)
+		return -SYNX_INVALID;
+
+	h_synxs = kcalloc(info.num_objs, sizeof(*h_synxs), GFP_KERNEL);
+	if (IS_ERR_OR_NULL(h_synxs))
+		return -ENOMEM;
+
+	if (copy_from_user(h_synxs,
+			u64_to_user_ptr(info.synx_objs),
+			sizeof(u32) * info.num_objs)) {
+		kfree(h_synxs);
+		return -EFAULT;
+	}
+
+	params.num_objs = info.num_objs;
+	params.h_synxs = h_synxs;
+	params.flags = SYNX_MERGE_LOCAL_FENCE | SYNX_MERGE_NOTIFY_ON_ALL;
+	params.h_merged_obj = &h_merged;
+
+	result = synx_merge(session, &params);
+	if (!result) {
+		info.merged = (__s32)h_merged;
+		if (copy_to_user(u64_to_user_ptr(k_ioctl->ioctl_ptr),
+				&info, k_ioctl->size))
+			result = -EFAULT;
+	}
+
+	kfree(h_synxs);
+	return result;
+}
+
+static int synx_handle_import_v1(struct synx_private_ioctl_arg *k_ioctl,
+	struct synx_session *session)
+{
+	struct synx_id_info info;
+	struct synx_import_params params = {0};
+	u32 h_synx, new_h_synx = 0;
+
+	if (copy_from_user(&info,
+			u64_to_user_ptr(k_ioctl->ioctl_ptr),
+			k_ioctl->size))
+		return -EFAULT;
+
+	h_synx = (u32)info.synx_obj;
+
+	params.type = SYNX_IMPORT_INDV_PARAMS;
+	params.indv.flags = SYNX_IMPORT_SYNX_FENCE | SYNX_IMPORT_LOCAL_FENCE;
+	params.indv.fence = &h_synx;
+	params.indv.new_h_synx = &new_h_synx;
+
+	if (synx_import(session, &params))
+		return -SYNX_INVALID;
+
+	info.new_synx_obj = (__s32)new_h_synx;
+
+	if (copy_to_user(u64_to_user_ptr(k_ioctl->ioctl_ptr),
+			&info, k_ioctl->size))
+		return -EFAULT;
+
+	return SYNX_SUCCESS;
 }
 
 static int synx_handle_create(struct synx_private_ioctl_arg *k_ioctl,
@@ -2210,6 +2403,9 @@ static int synx_handle_create(struct synx_private_ioctl_arg *k_ioctl,
 	int csl_fence;
 	struct synx_create_v2 create_info;
 	struct synx_create_params params = {0};
+
+	if (k_ioctl->size == sizeof(struct synx_info))
+		return synx_handle_create_v1(k_ioctl, session);
 
 	if (k_ioctl->size != sizeof(create_info))
 		return -SYNX_INVALID;
@@ -2242,6 +2438,9 @@ static int synx_handle_getstatus(struct synx_private_ioctl_arg *k_ioctl,
 {
 	struct synx_signal_v2 signal_info;
 
+	if (k_ioctl->size == sizeof(struct synx_signal))
+		return synx_handle_getstatus_v1(k_ioctl, session);
+
 	if (k_ioctl->size != sizeof(signal_info))
 		return -SYNX_INVALID;
 
@@ -2267,6 +2466,9 @@ static int synx_handle_import(struct synx_private_ioctl_arg *k_ioctl,
 	struct synx_import_info import_info;
 	struct synx_import_params params = {0};
 	int result = SYNX_SUCCESS;
+
+	if (k_ioctl->size == sizeof(struct synx_id_info))
+		return synx_handle_import_v1(k_ioctl, session);
 
 	if (k_ioctl->size != sizeof(import_info))
 		return -SYNX_INVALID;
@@ -2375,9 +2577,56 @@ fail:
 	return rc;
 }
 
+/*
+ * EXPORT only existed in v1: the exporter receives a secure_key, and the
+ * importer passes the (handle, key) pair to get its own handle to the same
+ * object. v2 replaced this with global handles and synx_handle_export() is a
+ * stub returning an error, which breaks the 5.10 userspace (CamX does
+ * CREATE -> BIND -> EXPORT).
+ *
+ * Emulation works because local_map in v2 is device-wide
+ * (synx_dev->native->local_map), not per session, so
+ * synx_native_import_handle() finds the object by handle number from any
+ * session. IMPORT does the actual work; EXPORT only validates and returns
+ * the handle itself as the key, which synx_handle_import_v1() ignores.
+ *
+ * No extra reference is taken here (5.10 used import_refcount, dropped on
+ * import): v2 has no path that would consume it, so it would leak. The
+ * object lives as long as the exporting session does.
+ * TODO: revisit if a short-lived session ever exports ahead of an import.
+ */
+static int synx_handle_export_v1(struct synx_private_ioctl_arg *k_ioctl,
+	struct synx_session *session)
+{
+	struct synx_id_info info;
+
+	if (copy_from_user(&info,
+			u64_to_user_ptr(k_ioctl->ioctl_ptr),
+			k_ioctl->size))
+		return -EFAULT;
+
+	if (synx_get_status(session, (u32)info.synx_obj) ==
+			SYNX_STATE_INVALID) {
+		dprintk(SYNX_ERR, "v1 EXPORT: invalid handle %d\n",
+			info.synx_obj);
+		return -SYNX_INVALID;
+	}
+
+	info.secure_key = (u32)info.synx_obj;
+
+	if (copy_to_user(u64_to_user_ptr(k_ioctl->ioctl_ptr),
+			&info, k_ioctl->size))
+		return -EFAULT;
+
+	return SYNX_SUCCESS;
+}
+
 static int synx_handle_export(struct synx_private_ioctl_arg *k_ioctl,
 	struct synx_session *session)
 {
+	if (k_ioctl->size == sizeof(struct synx_id_info))
+		return synx_handle_export_v1(k_ioctl, session);
+
 	return -SYNX_INVALID;
 }
 
@@ -2385,6 +2634,9 @@ static int synx_handle_signal(struct synx_private_ioctl_arg *k_ioctl,
 	struct synx_session *session)
 {
 	struct synx_signal_v2 signal_info;
+
+	if (k_ioctl->size == sizeof(struct synx_signal))
+		return synx_handle_signal_v1(k_ioctl, session);
 
 	if (k_ioctl->size != sizeof(signal_info))
 		return -SYNX_INVALID;
@@ -2405,6 +2657,9 @@ static int synx_handle_merge(struct synx_private_ioctl_arg *k_ioctl,
 	int result;
 	struct synx_merge_v2 merge_info;
 	struct synx_merge_params params = {0};
+
+	if (k_ioctl->size == sizeof(struct synx_merge))
+		return synx_handle_merge_v1(k_ioctl, session);
 
 	if (k_ioctl->size != sizeof(merge_info))
 		return -SYNX_INVALID;
@@ -2525,10 +2780,45 @@ static int synx_handle_cancel_async_wait(
 	return rc;
 }
 
+/*
+ * BIND is the only ioctl that cannot be told apart by size: synx_bind (v1)
+ * and synx_bind_v2 are both 24 bytes but have different layouts:
+ *
+ *   v1:  synx_obj@0  reserved@4  type@8   reserved@12  id[0]@16  id[1]@20
+ *   v2:  synx_obj@0  reserved@4  id@8 (u64)            type@16   reserved@20
+ *
+ * The v2 handler would read type from offset 16, where v1 stores the CSL
+ * object handle ("invalid bind ops for 2"). The session's uapi_v1 flag, set
+ * when the session is created, decides instead.
+ */
+static int synx_handle_bind_v1(struct synx_private_ioctl_arg *k_ioctl,
+	struct synx_session *session)
+{
+	struct synx_bind info;
+	struct synx_external_desc_v2 desc = {0};
+
+	if (copy_from_user(&info,
+			u64_to_user_ptr(k_ioctl->ioctl_ptr),
+			k_ioctl->size))
+		return -EFAULT;
+
+	desc.type = info.ext_sync_desc.type;
+	desc.id = (u64)(u32)info.ext_sync_desc.id[0];
+
+	k_ioctl->result = synx_bind(session, (u32)info.synx_obj, desc);
+
+	return k_ioctl->result;
+}
+
 static int synx_handle_bind(struct synx_private_ioctl_arg *k_ioctl,
 	struct synx_session *session)
 {
 	struct synx_bind_v2 synx_bind_info;
+
+	if (!IS_ERR_OR_NULL(session) &&
+			((struct synx_client *)session)->uapi_v1 &&
+			k_ioctl->size == sizeof(struct synx_bind))
+		return synx_handle_bind_v1(k_ioctl, session);
 
 	if (k_ioctl->size != sizeof(synx_bind_info))
 		return -SYNX_INVALID;
@@ -2871,12 +3161,39 @@ int synx_internal_uninitialize(struct synx_session *session)
 
 static int synx_open(struct inode *inode, struct file *filep)
 {
-	int rc = 0;
+	struct synx_initialization_params params = {0};
+	struct synx_session *session;
+	char name[SYNX_OBJ_NAME_LEN];
 
 	dprintk(SYNX_VERB, "Enter pid: %d\n", current->pid);
-	filep->private_data = NULL;
 
-	return rc;
+	/*
+	 * ABI compatibility with the 5.10 userspace.
+	 *
+	 * On 5.10 open() alone created the session ("umd-client-<pid>") and
+	 * there was no initialising ioctl. 6.6 added SYNX_INITIALIZE (id 14),
+	 * which the old libsynx does not know: it sends SYNX_CREATE directly
+	 * and the driver rejects it with "session is not initialized".
+	 *
+	 * Create a default session as 5.10 did. A client that does issue
+	 * SYNX_INITIALIZE still gets -SYNX_ALREADY.
+	 */
+	scnprintf(name, sizeof(name), "umd-client-%d", current->pid);
+	params.name = name;
+	params.id = SYNX_CLIENT_NATIVE;
+	params.flags = SYNX_INIT_DEFAULT;
+
+	session = synx_initialize(&params);
+	if (IS_ERR_OR_NULL(session)) {
+		filep->private_data = NULL;
+		dprintk(SYNX_ERR, "failed to create default session for pid %d\n",
+			current->pid);
+		return session ? PTR_ERR(session) : -ENOMEM;
+	}
+
+	((struct synx_client *)session)->uapi_v1 = true;
+	filep->private_data = session;
+	return 0;
 }
 
 static int synx_close(struct inode *inode, struct file *filep)
