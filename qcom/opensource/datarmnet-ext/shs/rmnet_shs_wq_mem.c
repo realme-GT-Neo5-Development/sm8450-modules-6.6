@@ -447,8 +447,9 @@ DATARMNETace28a2c7f->DATARMNET4da6031170;DATARMNET63c47f3c37[idx].
 DATARMNET18b7a5b761=DATARMNETace28a2c7f->DATARMNET18b7a5b761;DATARMNET63c47f3c37
 [idx].DATARMNET4df302dbd6=DATARMNETace28a2c7f->DATARMNET4df302dbd6;
 DATARMNET63c47f3c37[idx].DATARMNET42a992465f=DATARMNETace28a2c7f->
-DATARMNET42a992465f;DATARMNET63c47f3c37[idx].DATARMNETf510b48c29=
-DATARMNETecc0627c70.DATARMNETf510b48c29;idx+=(0xd26+209-0xdf6);}rm_err(
+DATARMNET42a992465f;/* DATARMNETf510b48c29 removed from the exported
+ * struct - see rmnet_shs_wq_mem.h (shsusrd ABI). */
+idx+=(0xd26+209-0xdf6);}rm_err(
 "\x53\x48\x53\x5f\x4d\x45\x4d\x3a\x20\x63\x61\x70\x5f\x64\x6d\x61\x5f\x70\x74\x72\x20\x3d\x20\x30\x78\x25\x6c\x6c\x78\x20\x61\x64\x64\x72\x20\x3d\x20\x30\x78\x25\x70\x4b" "\n"
 ,(unsigned long long)virt_to_phys((void*)DATARMNET410036d5ac),
 DATARMNET410036d5ac);if(!DATARMNET410036d5ac){rm_err("\x25\x73",
@@ -517,9 +518,10 @@ DATARMNET42a992465f;DATARMNETb0d78d576f[idx].hash=DATARMNET0f551e8a47->hash;
 DATARMNETb0d78d576f[idx].DATARMNET253a9fc708=DATARMNET0f551e8a47->
 DATARMNET253a9fc708;DATARMNETb0d78d576f[idx].DATARMNET324c1a8f98=
 DATARMNET0f551e8a47->DATARMNET324c1a8f98;DATARMNETb0d78d576f[idx].
-DATARMNETbb80fccd97=DATARMNET0f551e8a47->DATARMNETbb80fccd97;DATARMNETb0d78d576f
-[idx].ack_thresh=DATARMNET0f551e8a47->ack_thresh;DATARMNETb0d78d576f[idx].bif=
-DATARMNET0f551e8a47->bif;idx+=(0xd26+209-0xdf6);}rm_err(
+DATARMNETbb80fccd97=DATARMNET0f551e8a47->DATARMNETbb80fccd97;
+/* ack_thresh/bif removed from the exported struct - see
+ * rmnet_shs_wq_mem.h (shsusrd ABI). The internal fields are unchanged. */
+idx+=(0xd26+209-0xdf6);}rm_err(
 "\x53\x48\x53\x5f\x4d\x45\x4d\x3a\x20\x73\x73\x66\x6c\x6f\x77\x5f\x64\x6d\x61\x5f\x70\x74\x72\x20\x3d\x20\x30\x78\x25\x6c\x6c\x78\x20\x61\x64\x64\x72\x20\x3d\x20\x30\x78\x25\x70\x4b" "\n"
 ,(unsigned long long)virt_to_phys((void*)DATARMNET22e796eff3),
 DATARMNET22e796eff3);if(!DATARMNET22e796eff3){rm_err("\x25\x73",
@@ -635,8 +637,10 @@ coal.close.hw_evict;DATARMNETf46265286b[idx].coal_tcp=priv->stats.coal.coal_tcp;
 DATARMNETf46265286b[idx].coal_tcp_bytes=priv->stats.coal.coal_tcp_bytes;
 DATARMNETf46265286b[idx].coal_udp=priv->stats.coal.coal_udp;DATARMNETf46265286b[
 idx].coal_udp_bytes=priv->stats.coal.coal_udp_bytes;DATARMNETf46265286b[idx].
-mux_id=priv->mux_id;DATARMNETf46265286b[idx].pb_marker_seq=port->stats.
-pb_marker_seq;strscpy(DATARMNETf46265286b[idx].name,ep->ep->name,sizeof(
+mux_id=priv->mux_id;
+/* pb_marker_seq removed from the exported struct - see
+ * rmnet_shs_wq_mem.h (shsusrd ABI). port->stats.pb_marker_seq is kept. */
+strscpy(DATARMNETf46265286b[idx].name,ep->ep->name,sizeof(
 DATARMNETf46265286b[idx].name));DATARMNETf46265286b[idx].DATARMNET870c3dafcb=
 priv->stats.coal.coal_pkts;DATARMNETf46265286b[idx].DATARMNET4eb77c78e6=ep->
 DATARMNET4eb77c78e6;DATARMNETf46265286b[idx].DATARMNET257fc4b2d4=ep->

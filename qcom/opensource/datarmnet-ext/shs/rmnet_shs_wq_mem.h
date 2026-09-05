@@ -31,19 +31,37 @@
 "\x72\x6d\x6e\x65\x74\x5f\x73\x68\x73\x5f\x6e\x65\x74\x64\x65\x76"
 #define DATARMNET67578af78f ((0xec7+1108-0x12fd))
 #define DATARMNETa847b6b6d0 (DATARMNET67578af78f)
-#define DATARMNET75c69edb82 ((0xeb7+698-0x110d))
+/*
+ * ABI of /vendor/bin/shsusrd (the 5.10 vendor blob) - DO NOT CHANGE.
+ *
+ * The daemon mmaps the files in /proc/shs and walks the arrays using its own
+ * constants from the 5.10 version, as found in its disassembly:
+ *   shsusr_read_capacities  cmp w8, #0x8    -> caps       8 entries, 26 B stride
+ *   shsusr_read_ss_flows    cmp w8, #0x80   -> ss_flows 128 entries, 30 B stride
+ *   shsusr_read_top_flows   cmp w8, #0x4    -> fflows     4 entries
+ *   shsusr_read_netdev      cmp w8, #0x28   -> netdev    40 entries, 89 B stride
+ *
+ * The 6.6 value of this constant is 100, which made the daemon read 28 entries
+ * past the end of the array. fflows stays at 30 (6.6): the daemon reads only
+ * the first 4 and the rest is harmless.
+ */
+#define DATARMNET75c69edb82 (128)
 #define DATARMNETe4d15b9332 ((0xec7+1166-0x132d))
 #define DATARMNET9ae5f81f71 ((0xeb7+1158-0x132d))
 #define DATARMNET29d29f44cf ((0xd2d+202-0xdf7))
+/* caps: 6.6 `u8 DATARMNETf510b48c29` removed - the daemon uses a 26 B stride. */
 struct __attribute__((__packed__))DATARMNET33582f7450{u64 DATARMNET18b7a5b761;
-u64 DATARMNET4da6031170;u64 DATARMNET4df302dbd6;u16 DATARMNET42a992465f;u8 
-DATARMNETf510b48c29;};struct __attribute__((__packed__))DATARMNET661e7a8566{int 
+u64 DATARMNET4da6031170;u64 DATARMNET4df302dbd6;u16 DATARMNET42a992465f;};struct __attribute__((__packed__))DATARMNET661e7a8566{int 
 DATARMNET68a58889b0[(0xd18+223-0xdf4)];int DATARMNET1c7c913c7b[(0xd18+223-0xdf4)
 ];};struct __attribute__((__packed__))DATARMNETf44cda1bf2{u64 
 DATARMNET324c1a8f98;u64 DATARMNET253a9fc708;u64 DATARMNETbb80fccd97;u32 hash;u16
- DATARMNET42a992465f;};struct __attribute__((__packed__))DATARMNET3a84fbfeae{u64
+ DATARMNET42a992465f;};
+/* ss_flows: 6.6 `u32 bif` and `u32 ack_thresh` removed - the daemon uses a
+ * 30 B stride (`#0x1e` in shsusr_read_ss_flows). The internal fields with
+ * these names in DATARMNET0f551e8a47 remain, so ACK/BIF control still works. */
+struct __attribute__((__packed__))DATARMNET3a84fbfeae{u64
  DATARMNET324c1a8f98;u64 DATARMNET253a9fc708;u64 DATARMNETbb80fccd97;u32 hash;
-u32 bif;u32 ack_thresh;u16 DATARMNET42a992465f;};struct __attribute__((
+u16 DATARMNET42a992465f;};struct __attribute__((
 __packed__))DATARMNET26737fb11e{union{struct iphdr DATARMNETac9bbaad7c;struct 
 ipv6hdr DATARMNET1688a97aa4;}ip_hdr;union{struct tcphdr tp;struct udphdr up;}
 DATARMNETe33b41dad9;u64 DATARMNET324c1a8f98;u64 DATARMNET253a9fc708;u64 
@@ -58,7 +76,7 @@ DATARMNET95266642d1;u64 DATARMNET0d682bcb29;u64 DATARMNET20e8fc9db8;u32 hash;u16
 __packed__))DATARMNET57ccbe14f3{char name[DATARMNET9ae5f81f71];u64 
 DATARMNET77de6e34f2;u64 hw_evict;u64 DATARMNET870c3dafcb;u64 coal_tcp;u64 
 coal_tcp_bytes;u64 coal_udp;u64 coal_udp_bytes;u64 DATARMNET257fc4b2d4;u64 
-DATARMNET4eb77c78e6;u64 pb_marker_seq;u8 mux_id;};extern struct list_head 
+DATARMNET4eb77c78e6;u8 mux_id;};extern struct list_head
 DATARMNET6c23f11e81;extern struct list_head DATARMNETf91b305f4e;extern struct 
 list_head DATARMNET3208cd0982;extern struct list_head DATARMNET922b4752e2;extern
  struct list_head DATARMNETe46ae760db;enum{DATARMNETbd4083a6a4=
