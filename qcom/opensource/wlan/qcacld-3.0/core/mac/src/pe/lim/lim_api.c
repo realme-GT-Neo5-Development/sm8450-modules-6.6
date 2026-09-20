@@ -1070,7 +1070,7 @@ static QDF_STATUS pe_drop_pending_rx_mgmt_frames(struct mac_context *mac_ctx,
 		if (!(mac_ctx->rx_packet_drop_counter % 100))
 			pe_debug("No.of pending RX management frames reaches to 1/4th of threshold, rx_packet_drop_counter: %d",
 				mac_ctx->rx_packet_drop_counter);
-		mac_ctx->rx_packet_drop_counter++;
+			mac_ctx->rx_packet_drop_counter++;
 	}
 	return QDF_STATUS_SUCCESS;
 }
@@ -3282,8 +3282,10 @@ lim_cm_fill_link_session(struct mac_context *mac_ctx,
 		pe_session->limMlmState = eLIM_MLM_WT_REASSOC_RSP_STATE;
 	}
 end:
-	if (QDF_IS_STATUS_ERROR(status))
+	if (QDF_IS_STATUS_ERROR(status)) {
 		qdf_mem_free(pe_session->lim_join_req);
+		pe_session->lim_join_req = NULL;
+	}
 	return status;
 }
 

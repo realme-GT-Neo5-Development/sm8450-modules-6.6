@@ -1,6 +1,6 @@
 /*
  * Copyright (c) 2012-2015, 2020-2021, The Linux Foundation. All rights reserved.
- * Copyright (c) Qualcomm Technologies, Inc. and/or its subsidiaries.
+ * Copyright (c) 2022 Qualcomm Innovation Center, Inc. All rights reserved.
  *
  * Permission to use, copy, modify, and/or distribute this software for any
  * purpose with or without fee is hereby granted, provided that the above
@@ -47,8 +47,7 @@
  * as a testbed device with special functionality and not recommended
  * for production.
  * @is_wps_connection: is wps connection
- * @is_osen_connection: is osen connection
- * @is_ssid_hidden: AP SSID is hidden
+ * @is_osen_connection: is osen connectgion
  * @assoc_ie: assoc ie to be used in assoc req
  * @scan_ie: Default scan ie to be used in the uncast probe req
  * @entry: scan entry for the candidate
@@ -62,8 +61,7 @@ struct cm_vdev_join_req {
 	uint8_t force_24ghz_in_ht20:1,
 		force_rsne_override:1,
 		is_wps_connection:1,
-		is_osen_connection:1,
-		is_ssid_hidden:1;
+		is_osen_connection:1;
 	struct element_info assoc_ie;
 	struct element_info scan_ie;
 	struct scan_cache_entry *entry;

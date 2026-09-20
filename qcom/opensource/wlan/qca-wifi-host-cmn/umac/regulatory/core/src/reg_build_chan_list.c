@@ -330,6 +330,7 @@ static void reg_modify_chan_list_for_dfs_channels(
  * indoor_chan_enabled flag is set to false.
  * @pdev_priv_obj: Pointer to regulatory private pdev structure.
  */
+#ifdef CONFIG_REG_CLIENT
 static void reg_modify_chan_list_for_indoor_channels(
 		struct wlan_regulatory_pdev_priv_obj *pdev_priv_obj)
 {
@@ -364,6 +365,12 @@ static void reg_modify_chan_list_for_indoor_channels(
 		}
 	}
 }
+#else
+static void reg_modify_chan_list_for_indoor_channels(
+		struct wlan_regulatory_pdev_priv_obj *pdev_priv_obj)
+{
+}
+#endif
 
 /**
  *reg_modify_chan_list_for_indoor_concurrency() - Enable/Disable the indoor
@@ -1845,7 +1852,7 @@ reg_modify_chan_list_for_avoid_chan_ext(struct wlan_regulatory_pdev_priv_obj
 }
 #endif
 
-#ifdef CONFIG_REG_CLIENT
+#if defined(CONFIG_REG_CLIENT) && defined(CONFIG_BAND_6GHZ)
 /*
  * reg_modify_sp_channels() - Mark 6 GHz channels NO_IR and set state DFS
  * if power type is SP

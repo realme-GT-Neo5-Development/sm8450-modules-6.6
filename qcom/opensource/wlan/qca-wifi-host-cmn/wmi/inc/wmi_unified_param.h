@@ -1,6 +1,6 @@
 /*
  * Copyright (c) 2016-2021 The Linux Foundation. All rights reserved.
- * Copyright (c) Qualcomm Technologies, Inc. and/or its subsidiaries.
+ * Copyright (c) 2021-2024 Qualcomm Innovation Center, Inc. All rights reserved.
  *
  * Permission to use, copy, modify, and/or distribute this software for
  * any purpose with or without fee is hereby granted, provided that the
@@ -5283,7 +5283,6 @@ typedef enum {
 	wmi_service_twt_requestor,
 	wmi_service_twt_responder,
 	wmi_service_listen_interval_offload_support,
-	wmi_service_apf_data_offload_support_enabled,
 
 #ifdef OL_ATH_SMART_LOGGING
 	wmi_service_smart_logging_support,
@@ -5587,7 +5586,6 @@ struct wmi_host_fw_abi_ver {
  * @afc_timer_check_disable: Disables AFC Timer related checks in FW
  * @afc_req_id_check_disable: Disables AFC Request ID check in FW
  * @carrier_profile_config: Configuration for per-carrier profile
- * @apfv6_offload_disabled: APFv6 offload disabled bitmap
  */
 typedef struct {
 	uint32_t num_vdevs;
@@ -5708,7 +5706,6 @@ typedef struct {
 	bool afc_timer_check_disable;
 	bool afc_req_id_check_disable;
 	uint32_t carrier_profile_config;
-	uint32_t apfv6_offload_disabled;
 } target_resource_config;
 
 /**

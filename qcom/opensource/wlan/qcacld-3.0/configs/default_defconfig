@@ -232,12 +232,6 @@ ifeq (y,$(findstring y,$(CONFIG_ICNSS) $(CONFIG_ICNSS_MODULE) $(CONFIG_ICNSS2_HE
 	endif
 endif
 
-ifneq ($(DEVELOPER_DISABLE_BUILD_TIMESTAMP), y)
-ifneq ($(WLAN_DISABLE_BUILD_TAG), y)
-CONFIG_BUILD_TAG := y
-endif
-endif
-
 ifeq ($(CONFIG_ARCH_SDXLEMUR), y)
 CONFIG_MOBILE_ROUTER := y
 endif
@@ -348,7 +342,9 @@ endif
 	CONFIG_DP_PKT_ADD_TIMESTAMP := y
 endif
 
-CONFIG_WLAN_POWER_DEBUG := y
+ifeq ($(CONFIG_CNSS2_DEBUG), y)
+	CONFIG_WLAN_POWER_DEBUG := y
+endif
 #Enable Beacon Reception Stats
 CONFIG_FEATURE_BECN_STATS := y
 endif
@@ -1105,9 +1101,6 @@ CONFIG_WLAN_BCN_RECV_FEATURE := y
 #Flag to enable LTE COEX feature
 CONFIG_LTE_COEX := y
 
-#Flag to enable delayed peer obj free
-CONFIG_FEATURE_DELAYED_PEER_OBJ_DESTROY := y
-
 #Flag to enable/disable TARGET 11d scan
 CONFIG_TARGET_11D_SCAN := y
 
@@ -1333,9 +1326,6 @@ endif
 ifneq ($(CONFIG_HIF_USB), y)
 CONFIG_WLAN_LOGGING_SOCK_SVC := y
 endif
-
-CONFIG_CONNECTIVITY_PKTLOG := y
-CONFIG_PKTLOG_HAS_SPECIFIC_DATA := y
 
 ifneq ($(TARGET_BUILD_VARIANT),user)
 CONFIG_DESC_DUP_DETECT_DEBUG := y

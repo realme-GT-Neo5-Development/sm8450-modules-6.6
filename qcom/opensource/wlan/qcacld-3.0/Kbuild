@@ -39,8 +39,6 @@ endif
 
 cppflags-y += -include $(WLAN_ROOT)/configs/default_config.h
 
-ccflags-y += -D__ANDROID_COMMON_KERNEL__
-
 found = $(shell if grep -qF "struct link_station_parameters" $(srctree)/include/net/cfg80211.h; then echo "yes"; else echo "no"; fi;)
 ifeq ($(findstring yes, $(found)), yes)
 cppflags-y += -DCFG80211_LINK_STA_PARAMS_PRESENT
@@ -51,47 +49,23 @@ ifeq ($(findstring yes, $(found)), yes)
 cppflags-y += -DCFG80211_RU_PUNCT_NOTIFY
 endif
 
-WLAN_PLATFORM_ROOT := $(WLAN_ROOT)/../platform
-
-ifeq ($(CONFIG_ARCH_PARROT), y)
-CONFIG_QCA_CLD_WLAN_PROFILE=parrot_gki_$(WLAN_PROFILE)
-
-include \
-	$(WLAN_PLATFORM_ROOT)/cnss2/parrot_gki_defconfig \
-	$(WLAN_PLATFORM_ROOT)/cnss_genl/parrot_gki_defconfig \
-	$(WLAN_PLATFORM_ROOT)/cnss_prealloc/parrot_gki_defconfig \
-	$(WLAN_PLATFORM_ROOT)/cnss_utils/parrot_gki_defconfig
+# Autodetect MLO link_id support in cfg80211_ops. This kernel has
+# add_key(..., int link_id, u8 key_index, ...) and the 4-argument
+# cfg80211_ch_switch_notify(). qcacld selects those variants via
+# CFG80211_SINGLE_NETDEV_MULTI_LINK_SUPPORT, which, unlike RU_PUNCT above, has
+# no upstream autodetection and is only set from configs/config_to_feature.h
+# in Android builds. Without it 2.0.9.24C does not build on 6.6.
+found = $(shell if grep -qF "int link_id, u8 key_index" $(srctree)/include/net/cfg80211.h; then echo "yes" ;else echo "no" ;fi;)
+ifeq ($(findstring yes, $(found)), yes)
+cppflags-y += -DCFG80211_SINGLE_NETDEV_MULTI_LINK_SUPPORT
 endif
 
-include $(WLAN_ROOT)/configs/$(CONFIG_QCA_CLD_WLAN_PROFILE)_defconfig
+include $(WLAN_ROOT)/configs/$(patsubst "%",%,$(CONFIG_QCA_CLD_WLAN_PROFILE))_defconfig
 
 # add configurations in WLAN_CFG_OVERRIDE
 $(foreach cfg, $(WLAN_CFG_OVERRIDE), \
 	$(eval $(cfg)) \
 	$(warning "Overriding WLAN config with: $(cfg)"))
-
-# KERNEL_SUPPORTS_NESTED_COMPOSITES := y is used to enable nested
-# composite support. The nested composite support is available in some
-# MSM kernels, and is available in all GKI kernels beginning with
-# 5.10.20, but unfortunately is not available in any upstream kernel.
-#
-# When the feature is present in an MSM kernel, the flag is explicitly
-# set in the kernel sources.  When a GKI kernel is used, there isn't a
-# flag set in the sources, so set the flag here if we are building
-# with GKI kernel 5.10.20 or greater
-KERNEL_VERSION = $(shell echo $$(( ( $1 << 16 ) + ( $2 << 8 ) + $3 )))
-LINUX_CODE := $(call KERNEL_VERSION,$(VERSION),$(PATCHLEVEL),$(SUBLEVEL))
-COMPOSITE_CODE := 330260 # hardcoded $(call KERNEL_VERSION,5,10,20)
-ifeq ($(KERNEL_SUPPORTS_NESTED_COMPOSITES),)
-  #flag is not explicitly present
-  ifneq ($(findstring gki,$(CONFIG_LOCALVERSION))$(findstring qki,$(CONFIG_LOCALVERSION)),)
-    # GKI kernel
-    ifeq ($(shell test $(LINUX_CODE) -ge $(COMPOSITE_CODE); echo $$?),0)
-      # version >= 5.10.20
-      KERNEL_SUPPORTS_NESTED_COMPOSITES := y
-    endif
-  endif
-endif
 
 OBJS :=
 OBJS_DIRS :=
@@ -102,13 +76,7 @@ endef
 
 define _add-wlan-objs
   ifneq ($(2),)
-    ifeq ($(KERNEL_SUPPORTS_NESTED_COMPOSITES),y)
-      OBJS_DIRS += $(dir $(2))
-      OBJS += $(1).o
-      $(1)-y := $(2)
-    else
-      OBJS += $(2)
-    endif
+    OBJS += $(2)
   endif
 endef
 
@@ -443,10 +411,7 @@ endif
 ifeq ($(CONFIG_WLAN_FREQ_LIST), y)
 HDD_OBJS += $(HDD_SRC_DIR)/wlan_hdd_sysfs_get_freq_for_pwr.o
 endif
-ifeq ($(CONFIG_WLAN_SYSFS_BITRATES), y)
-HDD_OBJS += $(HDD_SRC_DIR)/wlan_hdd_sysfs_bitrates.o
 endif
-endif # CONFIG_WLAN_SYSFS
 ifeq ($(CONFIG_WLAN_SYSFS_DP_STATS), y)
 HDD_OBJS += $(HDD_SRC_DIR)/wlan_hdd_sysfs_txrx_stats_console.o
 endif
@@ -1251,7 +1216,7 @@ FTM_OBJS := $(FTM_DISP_SRC)/wlan_ftm_init_deinit.o \
 	    $(FTM_CORE_SRC)/wlan_ftm_svc.o \
 	    $(TARGET_IF_FTM_SRC)/target_if_ftm.o
 
-ifeq ($(CONFIG_QCA_WIFI_FTM_NL80211), y)
+ifeq ($(QCA_WIFI_FTM_NL80211), y)
 FTM_OBJS += $(OS_IF_FTM_SRC)/wlan_cfg80211_ftm.o
 endif
 
@@ -3391,9 +3356,9 @@ cppflags-$(CONFIG_DEBUG_RX_RING_BUFFER) += -DDEBUG_RX_RING_BUFFER
 
 cppflags-$(CONFIG_DESC_TIMESTAMP_DEBUG_INFO) += -DDESC_TIMESTAMP_DEBUG_INFO
 
-cppflags-$(CONFIG_PANIC_ON_BUG) += -DPANIC_ON_BUG
+cppflags-$(PANIC_ON_BUG) += -DPANIC_ON_BUG
 
-cppflags-$(CONFIG_WLAN_WARN_ON_ASSERT) += -DWLAN_WARN_ON_ASSERT
+cppflags-$(WLAN_WARN_ON_ASSERT) += -DWLAN_WARN_ON_ASSERT
 
 ccflags-$(CONFIG_POWER_MANAGEMENT_OFFLOAD) += -DWLAN_POWER_MANAGEMENT_OFFLOAD
 
@@ -3404,7 +3369,7 @@ cppflags-$(CONFIG_WLAN_LOG_INFO) += -DWLAN_LOG_INFO
 cppflags-$(CONFIG_WLAN_LOG_DEBUG) += -DWLAN_LOG_DEBUG
 cppflags-$(CONFIG_WLAN_LOG_ENTER) += -DWLAN_LOG_ENTER
 cppflags-$(CONFIG_WLAN_LOG_EXIT) += -DWLAN_LOG_EXIT
-cppflags-$(CONFIG_WLAN_OPEN_SOURCE) += -DWLAN_OPEN_SOURCE
+cppflags-$(WLAN_OPEN_SOURCE) += -DWLAN_OPEN_SOURCE
 cppflags-$(CONFIG_FEATURE_STATS_EXT) += -DWLAN_FEATURE_STATS_EXT
 cppflags-$(CONFIG_QCACLD_FEATURE_NAN) += -DWLAN_FEATURE_NAN
 cppflags-$(CONFIG_QCACLD_FEATURE_SON) += -DWLAN_FEATURE_SON
@@ -3419,7 +3384,6 @@ cppflags-$(CONFIG_WLAN_SYSFS_CHANNEL) += -DWLAN_SYSFS_CHANNEL
 cppflags-$(CONFIG_FEATURE_BECN_STATS) += -DWLAN_FEATURE_BEACON_RECEPTION_STATS
 
 cppflags-$(CONFIG_WLAN_SYSFS_CONNECT_INFO) += -DWLAN_SYSFS_CONNECT_INFO
-cppflags-$(CONFIG_WLAN_SYSFS_BITRATES) += -DWLAN_SYSFS_BITRATES
 
 #Set RX_PERFORMANCE
 cppflags-$(CONFIG_RX_PERFORMANCE) += -DRX_PERFORMANCE
@@ -3446,7 +3410,7 @@ cppflags-$(CONFIG_REMOVE_PKT_LOG) += -DREMOVE_PKT_LOG
 cppflags-$(CONFIG_ATH_11AC_TXCOMPACT) += -DATH_11AC_TXCOMPACT
 
 #ENABLE HTT HTC tx completion
-cppflags-$(CONFIG_ENABLE_CE4_COMP_DISABLE_HTT_HTC_MISC_LIST) += -DENABLE_CE4_COMP_DISABLE_HTT_HTC_MISC_LIST
+cppflags-$(ENABLE_CE4_COMP_DISABLE_HTT_HTC_MISC_LIST) += -DENABLE_CE4_COMP_DISABLE_HTT_HTC_MISC_LIST
 
 #Enable PCI specific APIS (dma, etc)
 cppflags-$(CONFIG_HIF_PCI) += -DHIF_PCI
@@ -4363,9 +4327,6 @@ ifeq ($(CONFIG_FEATURE_COEX_TPUT_SHAPING_ENABLE), y)
 cppflags-y += -DFEATURE_COEX_TPUT_SHAPING_CONFIG
 endif
 
-# CPU Boosting for roaming
-ccflags-$(CONFIG_WLAN_BOOST_CPU_FREQ_IN_ROAM) += -DWLAN_BOOST_CPU_FREQ_IN_ROAM
-
 KBUILD_CPPFLAGS += $(cppflags-y)
 
 # Currently, for versions of gcc which support it, the kernel Makefile
@@ -4403,9 +4364,20 @@ endif
 # driver attached. Moreover, as the first priority, host driver will only
 # append DYNAMIC_SINGLE_CHIP to the path of firmware/mac/ini file.
 
-ifneq ($(CONFIG_MULTI_IF_NAME),)
-ccflags-y += -DMULTI_IF_NAME=\"$(CONFIG_MULTI_IF_NAME)\"
+ifneq ($(DYNAMIC_SINGLE_CHIP),)
+ccflags-y += -DDYNAMIC_SINGLE_CHIP=\"$(DYNAMIC_SINGLE_CHIP)\"
+ifneq ($(MULTI_IF_NAME),)
+ccflags-y += -DMULTI_IF_NAME=\"$(MULTI_IF_NAME)\"
 endif
+#
+else
+
+ifneq ($(MODNAME), wlan)
+CHIP_NAME ?= $(MODNAME)
+ccflags-y += -DMULTI_IF_NAME=\"$(CHIP_NAME)\"
+endif
+
+endif #DYNAMIC_SINGLE_CHIP
 
 # WLAN_HDD_ADAPTER_MAGIC must be unique for all instances of the driver on the
 # system. If it is not defined, then the host driver will use the first 4
@@ -4423,27 +4395,8 @@ else
 endif
 
 # Android wifi state control interface
-ifneq ($(CONFIG_WLAN_CTRL_NAME),)
-ccflags-y += -DWLAN_CTRL_NAME=\"$(CONFIG_WLAN_CTRL_NAME)\"
-endif
-
-# inject some build related information
-ifeq ($(CONFIG_BUILD_TAG), y)
-CLD_CHECKOUT = $(shell cd "$(WLAN_ROOT)" && \
-	git reflog | grep -vm1 "}: cherry-pick: " | grep -oE ^[0-f]+)
-CLD_IDS = $(shell cd "$(WLAN_ROOT)" && \
-	git log -50 $(CLD_CHECKOUT)~..HEAD | \
-		sed -nE 's/^\s*Change-Id: (I[0-f]{10})[0-f]{30}\s*$$/\1/p' | \
-		paste -sd "," -)
-
-CMN_CHECKOUT = $(shell cd "$(WLAN_COMMON_INC)" && \
-	git reflog | grep -vm1 "}: cherry-pick: " | grep -oE ^[0-f]+)
-CMN_IDS = $(shell cd "$(WLAN_COMMON_INC)" && \
-	git log -50 $(CMN_CHECKOUT)~..HEAD | \
-		sed -nE 's/^\s*Change-Id: (I[0-f]{10})[0-f]{30}\s*$$/\1/p' | \
-		paste -sd "," -)
-BUILD_TAG = "cld:$(CLD_IDS); cmn:$(CMN_IDS); dev:$(DEVNAME)"
-ccflags-y += -DBUILD_TAG=\"$(BUILD_TAG)\"
+ifneq ($(WLAN_CTRL_NAME),)
+ccflags-y += -DWLAN_CTRL_NAME=\"$(WLAN_CTRL_NAME)\"
 endif
 
 # Module information used by KBuild framework

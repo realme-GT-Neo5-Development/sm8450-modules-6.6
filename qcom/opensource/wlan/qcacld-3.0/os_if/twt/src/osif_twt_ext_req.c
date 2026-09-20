@@ -956,7 +956,7 @@ int osif_twt_get_capabilities(struct wlan_objmgr_vdev *vdev)
 
 	if (!wlan_cm_is_vdev_connected(vdev)) {
 		osif_err_rl("Not associated!, vdev %d mode %d", vdev_id, mode);
-		return -EOPNOTSUPP;
+		return -EAGAIN;
 	}
 
 	if (wlan_cm_host_roam_in_progress(psoc, vdev_id))

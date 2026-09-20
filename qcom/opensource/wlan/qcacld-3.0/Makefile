@@ -12,36 +12,31 @@ KERNEL_SRC ?= /lib/modules/$(shell uname -r)/build
 M ?= $(shell pwd)
 
 ifeq ($(WLAN_ROOT),)
-# WLAN_ROOT must contain an absolute path (i.e. not a relative path)
-KBUILD_OPTIONS := WLAN_ROOT=$(shell cd $(KERNEL_SRC); readlink -e $(M))
-
-# MODNAME should be qca_cld3_wlan for helium based platform
-ifeq (qca_cld3, $(WLAN_CHIPSET))
-KBUILD_OPTIONS += MODNAME?=$(WLAN_CHIPSET)_wlan
-else
-KBUILD_OPTIONS += MODNAME?=wlan
-endif
-
 WLAN_CHIPSET := qca_cld3
 LOCAL_DEV_NAME := $(patsubst .%,%,\
 	$(lastword $(strip $(subst /, ,$(M)))))
 
-KBUILD_EXTRA := \
-    WLAN_PROFILE=$(LOCAL_DEV_NAME) \
-    DYNAMIC_SINGLE_CHIP=$(LOCAL_DEV_NAME) \
-    MODNAME=$(WLAN_CHIPSET)_$(LOCAL_DEV_NAME) \
-    DEVNAME=$(LOCAL_DEV_NAME)
+# WLAN_ROOT must contain an absolute path (i.e. not a relative path)
+KBUILD_OPTIONS := WLAN_ROOT=$(KERNEL_SRC)/$(M)
 
-KBUILD_OPTIONS += \
-    KBUILD_EXTRA_SYMBOLS=$(M)/../../../dataipa/drivers/platform/msm/Module.symvers \
-    KBUILD_EXTRA_SYMBOLS+=$(M)/../../platform/Module.symvers
+# MODNAME should be qca_cld3_wlan for helium based platform
+ifeq (qca_cld3, $(WLAN_CHIPSET))
+KBUILD_OPTIONS += MODNAME?=$(WLAN_CHIPSET)_$(LOCAL_DEV_NAME)
+else
+KBUILD_OPTIONS += MODNAME?=wlan
+endif
 
 #By default build for CLD
 WLAN_SELECT := CONFIG_QCA_CLD_WLAN=m
-KBUILD_OPTIONS += CONFIG_QCA_WIFI_ISOC=0
-KBUILD_OPTIONS += CONFIG_QCA_WIFI_2_0=1
 KBUILD_OPTIONS += $(WLAN_SELECT)
-KBUILD_OPTIONS += $(KBUILD_EXTRA) # Extra config if any
+
+KBUILD_OPTIONS += \
+    WLAN_PROFILE=$(LOCAL_DEV_NAME) \
+    DYNAMIC_SINGLE_CHIP=$(LOCAL_DEV_NAME) \
+    MODNAME=$(WLAN_CHIPSET)_$(LOCAL_DEV_NAME) \
+    DEVNAME=$(LOCAL_DEV_NAME) \
+    WLAN_CTRL_NAME=wlan
+
 endif
 
 all:

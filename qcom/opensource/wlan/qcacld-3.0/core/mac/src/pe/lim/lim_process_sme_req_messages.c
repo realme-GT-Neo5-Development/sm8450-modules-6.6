@@ -1,6 +1,6 @@
 /*
  * Copyright (c) 2012-2021 The Linux Foundation. All rights reserved.
- * Copyright (c) Qualcomm Technologies, Inc. and/or its subsidiaries.
+ * Copyright (c) 2021-2024 Qualcomm Innovation Center, Inc. All rights reserved.
  *
  * Permission to use, copy, modify, and/or distribute this software for
  * any purpose with or without fee is hereby granted, provided that the
@@ -2574,7 +2574,12 @@ lim_fill_dot11_mode(struct mac_context *mac_ctx, struct pe_session *session,
 #ifdef WLAN_FEATURE_11AX
 static bool lim_enable_twt(struct mac_context *mac_ctx, tDot11fBeaconIEs *ie)
 {
-	if (mac_ctx->mlme_cfg->he_caps.dot11_he_cap.twt_request && ie &&
+	if (!ie) {
+		pe_debug("ie is null");
+		return false;
+	}
+
+	if (mac_ctx->mlme_cfg->he_caps.dot11_he_cap.twt_request &&
 	    (ie->qcn_ie.present || ie->he_cap.twt_responder)) {
 		pe_debug("TWT is supported, hence disable UAPSD; twt req supp: %d,twt respon supp: %d, QCN_IE: %d",
 			  mac_ctx->mlme_cfg->he_caps.dot11_he_cap.twt_request,
@@ -4070,7 +4075,6 @@ lim_fill_session_params(struct mac_context *mac_ctx,
 		     session->ssId.length);
 
 	session->force_24ghz_in_ht20 = req->force_24ghz_in_ht20;
-	session->ssidHidden = req->is_ssid_hidden;
 
 	status = lim_fill_pe_session(mac_ctx, session, bss_desc);
 	if (QDF_IS_STATUS_ERROR(status)) {
@@ -4085,9 +4089,6 @@ lim_fill_session_params(struct mac_context *mac_ctx,
 	if (req->assoc_ie.len)
 		QDF_TRACE_HEX_DUMP(QDF_MODULE_ID_PE, QDF_TRACE_LEVEL_DEBUG,
 				   req->assoc_ie.ptr, req->assoc_ie.len);
-	/* update assoc ie to cm */
-	cm_update_session_assoc_ie(mac_ctx->psoc, session->vdev_id,
-				   &req->assoc_ie);
 
 	status = lim_fill_crypto_params(mac_ctx, session, req);
 	if (QDF_IS_STATUS_ERROR(status)) {
@@ -4107,13 +4108,14 @@ lim_fill_session_params(struct mac_context *mac_ctx,
 	}
 
 	pe_debug("After stripping Assoc IE len: %d", req->assoc_ie.len);
-
 	if (req->assoc_ie.len)
 		QDF_TRACE_HEX_DUMP(QDF_MODULE_ID_PE, QDF_TRACE_LEVEL_DEBUG,
 				   req->assoc_ie.ptr, req->assoc_ie.len);
-
 	qdf_mem_copy(pe_join_req->addIEAssoc.addIEdata,
 		     req->assoc_ie.ptr, req->assoc_ie.len);
+	/* update assoc ie to cm */
+	cm_update_session_assoc_ie(mac_ctx->psoc, session->vdev_id,
+				   &req->assoc_ie);
 	pe_join_req->addIEAssoc.length = req->assoc_ie.len;
 	qdf_mem_copy(pe_join_req->addIEScan.addIEdata,
 		     req->scan_ie.ptr, req->scan_ie.len);
@@ -4638,8 +4640,6 @@ static void lim_handle_reassoc_req(struct cm_vdev_join_req *req)
 	if (req->assoc_ie.len)
 		QDF_TRACE_HEX_DUMP(QDF_MODULE_ID_PE, QDF_TRACE_LEVEL_DEBUG,
 				   req->assoc_ie.ptr, req->assoc_ie.len);
-	/* update assoc ie to cm */
-	cm_update_session_assoc_ie(mac_ctx->psoc, vdev_id, &req->assoc_ie);
 
 	lim_strip_rsnx_ie(mac_ctx, session_entry, req);
 
@@ -4657,6 +4657,8 @@ static void lim_handle_reassoc_req(struct cm_vdev_join_req *req)
 	qdf_mem_copy(reassoc_req->addIEAssoc.addIEdata,
 		     req->assoc_ie.ptr, req->assoc_ie.len);
 	reassoc_req->addIEAssoc.length = req->assoc_ie.len;
+	/* update assoc ie to cm */
+	cm_update_session_assoc_ie(mac_ctx->psoc, vdev_id, &req->assoc_ie);
 	ucast_cipher = wlan_crypto_get_param(session_entry->vdev,
 					     WLAN_CRYPTO_PARAM_UCAST_CIPHER);
 	auth_mode = wlan_crypto_get_param(session_entry->vdev,
@@ -8079,9 +8081,10 @@ bool lim_process_sme_req_messages(struct mac_context *mac,
 		break;
 
 	case eWNI_SME_ASSOC_CNF:
-		pe_debug("Received ASSOC_CNF message");
-		__lim_process_sme_assoc_cnf_new(mac, pMsg->type,
-						msg_buf);
+		if (pMsg->type == eWNI_SME_ASSOC_CNF)
+			pe_debug("Received ASSOC_CNF message");
+			__lim_process_sme_assoc_cnf_new(mac, pMsg->type,
+							msg_buf);
 		break;
 
 	case eWNI_SME_ADDTS_REQ:

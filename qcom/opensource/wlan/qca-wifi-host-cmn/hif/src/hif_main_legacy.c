@@ -1,6 +1,5 @@
 /*
  * Copyright (c) 2013-2018, 2020 The Linux Foundation. All rights reserved.
- * Copyright (c) Qualcomm Technologies, Inc. and/or its subsidiaries.
  *
  * Permission to use, copy, modify, and/or distribute this software for
  * any purpose with or without fee is hereby granted, provided that the
@@ -22,8 +21,7 @@
 #include "qdf_module.h"
 #include "hif_main.h"
 
-#if defined(HIF_PCI) || defined(HIF_SNOC) || defined(HIF_AHB) || \
-	defined(HIF_IPCI)
+#if defined(HIF_PCI) || defined(HIF_SNOC) || defined(HIF_AHB)
 #include "ce_api.h"
 #include "ce_internal.h"
 #endif

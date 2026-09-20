@@ -1,6 +1,6 @@
 /*
  * Copyright (c) 2016-2021 The Linux Foundation. All rights reserved.
- * Copyright (c) Qualcomm Technologies, Inc. and/or its subsidiaries.
+ * Copyright (c) 2022 Qualcomm Innovation Center, Inc. All rights reserved.
  *
  * Permission to use, copy, modify, and/or distribute this software for
  * any purpose with or without fee is hereby granted, provided that the
@@ -330,6 +330,14 @@ static inline int pld_pcie_force_wake_release(struct device *dev)
 	return 0;
 }
 
+static inline void pld_pcie_lock_pm_sem(struct device *dev)
+{
+}
+
+static inline void pld_pcie_release_pm_sem(struct device *dev)
+{
+}
+
 static inline void pld_pcie_lock_reg_window(struct device *dev,
 					    unsigned long *flags)
 {
@@ -636,6 +644,22 @@ static inline int pld_pcie_is_device_awake(struct device *dev)
 static inline int pld_pcie_force_wake_release(struct device *dev)
 {
 	return cnss_pci_force_wake_release(dev);
+}
+
+/*
+ * cnss_lock_pm_sem() / cnss_release_pm_sem() are still declared in
+ * platform/inc/cnss2.h, but the 6.6 cnss2 module no longer implements or
+ * exports them (upstream removed the wrappers in 2.0.9.25F). The only caller
+ * is the BMI path in core/bmi/src/ol_fw.c (older chips such as Rome);
+ * QCA6490 loads firmware via QMI/MHI and never gets there, so empty stubs are
+ * safe, as in the non-CNSS variant earlier in this file.
+ */
+static inline void pld_pcie_lock_pm_sem(struct device *dev)
+{
+}
+
+static inline void pld_pcie_release_pm_sem(struct device *dev)
+{
 }
 
 static inline void pld_pcie_lock_reg_window(struct device *dev,

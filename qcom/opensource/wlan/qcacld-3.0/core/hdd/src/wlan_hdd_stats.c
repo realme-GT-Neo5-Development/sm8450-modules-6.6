@@ -92,6 +92,8 @@
 #define HDD_LINK_STATS_MAX		5
 #define HDD_MAX_ALLOWED_LL_STATS_FAILURE	5
 
+#define MAX_HT_MCS_INDEX 7
+
 /* 11B, 11G Rate table include Basic rate and Extended rate
  * The IDX field is the rate index
  * The HI field is the rate when RSSI is strong or being ignored
@@ -1225,7 +1227,7 @@ static void hdd_llstats_post_radio_stats(struct hdd_adapter *adapter,
 	if (!vendor_event) {
 		hdd_err("cfg80211_vendor_cmd_alloc_reply_skb failed");
 		hdd_llstats_free_radio_stats(radiostat);
-		goto failure;
+		return;
 	}
 
 	if (nla_put_u32(vendor_event,
@@ -4448,16 +4450,19 @@ static void hdd_get_max_rate_ht(struct hdd_station_info *stainfo,
 	}
 
 	if (!report_max) {
-		for (i = 0; i < mcsidx; i++) {
+		for (i = 0; i < MAX_HT_MCS_INDEX && i < mcsidx; i++) {
 			if (rssi <= rssi_mcs_tbl[mode][i]) {
 				mcsidx = i;
 				break;
 			}
 		}
-		if (mcsidx < stats->tx_rate.mcs)
+		if (mcsidx < stats->tx_rate.mcs &&
+		    stats->tx_rate.mcs <= MAX_HT_MCS_INDEX)
 			mcsidx = stats->tx_rate.mcs;
 	}
 
+	if (mcsidx > MAX_HT_MCS_INDEX)
+		mcsidx = MAX_HT_MCS_INDEX;
 	tmprate = supported_mcs_rate[mcsidx].supported_rate[flag];
 
 	hdd_debug("tmprate %d mcsidx %d", tmprate, mcsidx);
@@ -6352,7 +6357,7 @@ static int __wlan_hdd_cfg80211_dump_survey(struct wiphy *wiphy,
 	bool filled = false;
 
 	if (idx > NUM_CHANNELS - 1)
-		return -ENOENT;
+		return -EINVAL;
 
 	hdd_ctx = WLAN_HDD_GET_CTX(adapter);
 	status = wlan_hdd_validate_context(hdd_ctx);
@@ -6380,7 +6385,7 @@ static int __wlan_hdd_cfg80211_dump_survey(struct wiphy *wiphy,
 	filled = wlan_hdd_update_survey_info(wiphy, adapter, survey, idx);
 
 	if (!filled)
-		return -ENOENT;
+		return -ENONET;
 
 	return 0;
 }
@@ -6682,7 +6687,9 @@ QDF_STATUS wlan_hdd_get_mib_stats(struct hdd_adapter *adapter)
 		return ret;
 	}
 
+#ifdef WLAN_DEBUGFS
 	hdd_debugfs_process_mib_stats(adapter, stats);
+#endif
 
 	wlan_cfg80211_mc_cp_stats_free_stats_event(stats);
 	return ret;

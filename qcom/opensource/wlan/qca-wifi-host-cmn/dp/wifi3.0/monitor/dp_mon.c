@@ -1,6 +1,6 @@
 /*
  * Copyright (c) 2016-2021, The Linux Foundation. All rights reserved.
- * Copyright (c) Qualcomm Technologies, Inc. and/or its subsidiaries.
+ * Copyright (c) 2021-2023 Qualcomm Innovation Center, Inc. All rights reserved.
  *
  * Permission to use, copy, modify, and/or distribute this software for any
  * purpose with or without fee is hereby granted, provided that the above
@@ -1659,7 +1659,7 @@ dp_disable_enhanced_stats(struct cdp_soc_t *soc, uint8_t pdev_id)
 	struct dp_mon_pdev *mon_pdev;
 
 
-	if (!pdev)
+	if (!pdev || !pdev->monitor_pdev)
 		return QDF_STATUS_E_FAILURE;
 
 	mon_pdev = pdev->monitor_pdev;
@@ -3371,6 +3371,12 @@ dp_process_ppdu_stats_sch_cmd_status_tlv(struct dp_pdev *pdev,
 			if (!peer)
 				continue;
 
+			if (!peer->monitor_peer) {
+				dp_peer_unref_delete(peer,
+						     DP_MOD_ID_TX_PPDU_STATS);
+				continue;
+			}
+
 			mon_peer = peer->monitor_peer;
 			delay_ppdu = &mon_peer->delayed_ba_ppdu_stats;
 			start_tsf = ppdu_desc->ppdu_start_timestamp;
@@ -3427,6 +3433,12 @@ dp_process_ppdu_stats_sch_cmd_status_tlv(struct dp_pdev *pdev,
 			 */
 			if (!peer)
 				continue;
+
+			if (!peer->monitor_peer) {
+				dp_peer_unref_delete(peer,
+						     DP_MOD_ID_TX_PPDU_STATS);
+				continue;
+			}
 
 			mon_peer = peer->monitor_peer;
 			if (ppdu_desc->user[i].completion_status !=
@@ -4338,7 +4350,7 @@ static bool dp_txrx_ppdu_stats_handler(struct dp_soc *soc,
 
 	return true;
 }
-#elif (!defined(REMOVE_PKT_LOG))
+#else
 static bool dp_txrx_ppdu_stats_handler(struct dp_soc *soc,
 				       uint8_t pdev_id, qdf_nbuf_t htt_t2h_msg)
 {

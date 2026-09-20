@@ -1,6 +1,6 @@
 /*
  * Copyright (c) 2017-2021 The Linux Foundation. All rights reserved.
- * Copyright (c) Qualcomm Technologies, Inc. and/or its subsidiaries.
+ * Copyright (c) 2021-2023 Qualcomm Innovation Center, Inc. All rights reserved.
  *
  * Permission to use, copy, modify, and/or distribute this software for
  * any purpose with or without fee is hereby granted, provided that the
@@ -692,11 +692,6 @@ bool ucfg_pmo_is_apf_enabled(struct wlan_objmgr_psoc *psoc)
 
 	return pmo_intersect_apf(pmo_psoc_ctx);
 }
-
-uint32_t ucfg_pmo_get_apfv6_offload_bitmap(struct wlan_objmgr_psoc *psoc)
-{
-	return pmo_get_apfv6_offload_bitmap(psoc);
-}
 #endif
 
 bool
@@ -712,6 +707,9 @@ uint32_t
 ucfg_pmo_get_runtime_pm_delay(struct wlan_objmgr_psoc *psoc)
 {
 	struct pmo_psoc_priv_obj *pmo_psoc_ctx = pmo_psoc_get_priv(psoc);
+
+	if (!pmo_psoc_ctx)
+		return 0;
 
 	return pmo_psoc_ctx->psoc_cfg.runtime_pm_delay;
 }
@@ -1066,18 +1064,3 @@ QDF_STATUS ucfg_pmo_config_icmp_offload(struct wlan_objmgr_psoc *psoc,
 	return pmo_tgt_config_icmp_offload_req(psoc, pmo_icmp_req);
 }
 #endif
-
-bool
-ucfg_pmo_get_ns_offload_enable_dynamic(struct wlan_objmgr_vdev *vdev)
-{
-	return pmo_core_get_ns_offload_enable_dynamic(vdev);
-}
-
-void
-ucfg_pmo_set_ns_offload_enable_dynamic(struct wlan_objmgr_vdev *vdev,
-				       enum pmo_offload_trigger trigger,
-				       bool ns_offload_enable_dyn)
-{
-	pmo_core_set_ns_offload_enable_dynamic(vdev, trigger,
-                                               ns_offload_enable_dyn);
-}
