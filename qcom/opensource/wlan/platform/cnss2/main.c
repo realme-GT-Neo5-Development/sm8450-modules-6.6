@@ -7928,6 +7928,18 @@ static int cnss_probe(struct platform_device *plat_dev)
 
 	plat_priv->plat_dev = plat_dev;
 	plat_priv->dev_node = NULL;
+	/*
+	 * Enable WLAN recovery by default. With recovery_enabled == 0 (the
+	 * devm_kzalloc default) cnss_recovery_handler() answers a firmware
+	 * crash with panic("subsys-restart: ...wlan crashed"), taking down the
+	 * whole device. Userspace would normally enable it through
+	 * /sys/kernel/cnss/recovery, but nothing on this device does so.
+	 * With recovery enabled a firmware crash restarts only WLAN.
+	 *
+	 * TODO: this is a safeguard, not a fix; the root cause of the firmware
+	 * crashes (RDDM under network load) is still unknown.
+	 */
+	plat_priv->recovery_enabled = true;
 	plat_priv->device_id = device_id->driver_data;
 	plat_priv->dt_type = cnss_dt_type(plat_priv);
 	cnss_pr_info("Device id: 0x%lx\n", plat_priv->device_id);

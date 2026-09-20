@@ -5333,6 +5333,17 @@ static int cnss_pci_runtime_resume(struct device *dev)
 	}
 
 out:
+	/*
+	 * Restored from the msm-5.10 kernel (drivers/net/wireless/cnss2/pci.c),
+	 * where this function cleared drv_connected_last on success; the 6.6
+	 * code dropped it. drv_connected_last gates skip_disable_pci in
+	 * cnss_pci_suspend_bus() and skip_enable_pci in cnss_pci_resume_bus();
+	 * left set after a completed resume, the next cycle may skip saving and
+	 * restoring the PCI config space and entering D3hot.
+	 */
+	if (!ret)
+		pci_priv->drv_connected_last = 0;
+
 	cnss_pr_vdbg("Runtime resume status: %d\n", ret);
 
 	return ret;
