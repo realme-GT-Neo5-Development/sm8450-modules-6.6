@@ -169,6 +169,8 @@ static const u32 gen7_0_0_ifpc_pwrup_reglist[] = {
 	GEN7_CP_PROTECT_REG+45,
 	GEN7_CP_PROTECT_REG+46,
 	GEN7_CP_PROTECT_REG+47,
+	/* FORWARDPORT: 5.10 restored this after IFPC, see gen7_start() */
+	GEN7_CP_AHB_CNTL,
 };
 
 /* Gen7_9_x IFPC only static powerup restore list */
@@ -853,6 +855,16 @@ int gen7_start(struct adreno_device *adreno_dev)
 			FIELD_PREP(GENMASK(11, 8), 9) |
 			BIT(3) | BIT(2) |
 			FIELD_PREP(GENMASK(1, 0), 2));
+
+	/*
+	 * FORWARDPORT: 5.10 kgsl (adreno_gen7.c:470) - "Set the AHB default
+	 * slave response to ERROR". The 6.6 drop removed it. Without it every
+	 * new GL context of the 5.10-era UMD on senna (A730) raises bursts of
+	 * "CP: AHB bus error, CP_RL_ERROR_DETAILS_0:0x10008e07"; 5.10 logs 0.
+	 * Also restored after IFPC via gen7_0_0_ifpc_pwrup_reglist.
+	 */
+	if (adreno_is_gen7_0_x_family(adreno_dev))
+		kgsl_regwrite(device, GEN7_CP_AHB_CNTL, 0x1);
 
 	/*
 	 * CP takes care of the restore during IFPC exit. We need to restore at slumber
