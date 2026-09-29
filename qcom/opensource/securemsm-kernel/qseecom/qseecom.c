@@ -1407,13 +1407,24 @@ static int qseecom_dmabuf_cache_operations(struct dma_buf *dmabuf,
 		goto exit;
 	}
 
+	/*
+	 * Cache maintenance semantics restored from the msm-5.10 kernel. The
+	 * 6.6 techpack reversed the begin/end order for CLEAN and, for
+	 * INVALIDATE, switched begin() to FROM_DEVICE and dropped the
+	 * end_cpu_access() call. begin_cpu_access() invalidates (the CPU sees
+	 * device writes) and end_cpu_access() cleans (the device sees CPU
+	 * writes); without the end() call CPU writes may stay in the cache,
+	 * invisible to TZ. Only used on the listener path
+	 * (__qseecom_process_incomplete_cmd, ptr_svc->dmabuf).
+	 */
 	switch (cache_op) {
 	case QSEECOM_CACHE_CLEAN: /* Doing CLEAN and INVALIDATE */
-		dma_buf_end_cpu_access(dmabuf, DMA_BIDIRECTIONAL);
 		dma_buf_begin_cpu_access(dmabuf, DMA_BIDIRECTIONAL);
+		dma_buf_end_cpu_access(dmabuf, DMA_BIDIRECTIONAL);
 		break;
 	case QSEECOM_CACHE_INVALIDATE:
-		dma_buf_begin_cpu_access(dmabuf, DMA_FROM_DEVICE);
+		dma_buf_begin_cpu_access(dmabuf, DMA_TO_DEVICE);
+		dma_buf_end_cpu_access(dmabuf, DMA_FROM_DEVICE);
 		break;
 	default:
 		pr_err("cache (%d) operation not supported\n",

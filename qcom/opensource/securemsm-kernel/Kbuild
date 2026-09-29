@@ -10,7 +10,16 @@ ifneq ($(CONFIG_ARCH_QTI_VM), y)
 endif
 
 #Enable Qseecom if CONFIG_ARCH_KHAJE OR CONFIG_ARCH_KHAJE or CONFIG_QTI_QUIN_GVM is set to y
-ifneq (, $(filter y, $(CONFIG_QTI_QUIN_GVM) $(CONFIG_ARCH_KHAJE) $(CONFIG_ARCH_SA8155) $(CONFIG_ARCH_BLAIR) $(CONFIG_ARCH_SA6155) $(CONFIG_ARCH_MONACO) $(CONFIG_ARCH_PARROT)))
+#
+# senna (waipio/cape) runs the 5.10 vendor, which talks to the real qseecom
+# driver (/dev/qseecom: qseecomd listeners, keymaster, gatekeeper, fingerprint).
+# In compat mode smcinvoke_dlkm exports its own qseecom_* kernel API and its
+# qseecom_process_listener_from_smcinvoke() is a stub returning -EOPNOTSUPP:
+# a listener request raised in an smcinvoke session (QWES in ssgtzd needs the
+# TZ file listener) is dropped, TZ keeps the listener busy forever, and every
+# TA that needs it spins in "blocked_on_listener" -> PIN/fingerprint unlock
+# hangs. Build qseecom_dlkm with its kernel API, as 5.10 did.
+ifneq (, $(filter y, $(CONFIG_QTI_QUIN_GVM) $(CONFIG_ARCH_KHAJE) $(CONFIG_ARCH_SA8155) $(CONFIG_ARCH_BLAIR) $(CONFIG_ARCH_SA6155) $(CONFIG_ARCH_MONACO) $(CONFIG_ARCH_PARROT) $(CONFIG_ARCH_WAIPIO)))
     include $(SSG_MODULE_ROOT)/config/sec-kernel_defconfig_qseecom.conf
     LINUXINCLUDE += -include $(SSG_MODULE_ROOT)/config/sec-kernel_defconfig_qseecom.h
 else
