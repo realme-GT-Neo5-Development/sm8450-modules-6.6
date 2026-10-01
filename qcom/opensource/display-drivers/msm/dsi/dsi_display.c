@@ -73,37 +73,7 @@ extern int oplus_display_private_api_init(void);
 #define SEC_PANEL_NAME_MAX_LEN  256
 
 u8 dbgfs_tx_cmd_buf[SZ_4K];
-/*
- * Default primary display instead of an empty buffer.
- *
- * boot_displays[0].name is derived from this parameter and is the only input
- * the Pixelworks layer uses to identify the panel:
- *
- *   !strcmp(boot_displays[0].name, "qcom,mdss_dsi_oplus_senna_bc_...")
- *        && is_project(22624)   ->  IRIS_PANEL_SUPPORT_1
- *
- * With an empty buffer Iris ends up in IRIS_PANEL_NOT_SUPPORT.
- *
- * The bootloader normally passes `msm_drm.dsi_display0=` on the command line,
- * but for a module libmodprobe takes `modname.param=` from the
- * ro.boot.kernel_cmdline property, which is not available here, so neither
- * the command line nor modules.options reaches the module. The value can
- * still be overridden through module_param_string().
- *
- * The name matches `qcom,dsi-default-panel` and
- * `pxlw,dsi-display-primary-active` in the senna DT.
- *
- * `:sim-swte` selects software TE (watchdog timer instead of the panel TE
- * signal). The senna panel is dsc_cmd, so a frame is only scanned out after
- * TE. TE is routed through Iris, which stays in bypass until lightup, and
- * lightup happens on the first commit: commit waits for TE, TE needs an
- * active Iris, Iris waits for the commit, and the SDE commit path deadlocks.
- * dsi_display_parse_cmdline_topology() turns `:sim-swte` into
- * display->sw_te_using_wd and panel->te_using_watchdog_timer, so SDE uses a
- * timer instead of waiting for hardware TE.
- */
-static char dsi_display_primary[MAX_CMDLINE_PARAM_LEN] =
-	"qcom,mdss_dsi_oplus_senna_bc_nt37705_1240_2772_dsc_cmd:sim-swte:config0";
+static char dsi_display_primary[MAX_CMDLINE_PARAM_LEN];
 static char dsi_display_secondary[MAX_CMDLINE_PARAM_LEN];
 static struct dsi_display_boot_param boot_displays[MAX_DSI_ACTIVE_DISPLAY] = {
 	{.boot_param = dsi_display_primary},
