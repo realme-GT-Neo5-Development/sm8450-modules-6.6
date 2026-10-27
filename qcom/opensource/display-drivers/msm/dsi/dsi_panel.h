@@ -206,7 +206,6 @@ struct dsi_backlight_config {
 #ifdef OPLUS_FEATURE_DISPLAY
 	u32 bl_normal_max_level;
 	u32 brightness_normal_max_level;
-	u32 brightness_default_level;
 	u32 dc_backlight_threshold;
 	bool oplus_dc_mode;
 	u32 global_hbm_case_id;
@@ -214,6 +213,7 @@ struct dsi_backlight_config {
 	bool global_hbm_scale_mapping;
 	u32 pwm_turbo_gamma_bl_threshold;
 #endif /* OPLUS_FEATURE_DISPLAY */
+	u32 brightness_default_level;
 	/* current brightness value */
 	u32 brightness;
 	u32 bl_level;
