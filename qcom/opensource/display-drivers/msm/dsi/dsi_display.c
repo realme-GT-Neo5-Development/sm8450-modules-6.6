@@ -3545,6 +3545,18 @@ int dsi_host_transfer_sub(struct mipi_dsi_host *host, struct dsi_cmd_desc *cmd)
 		}
 	}
 
+#if defined(CONFIG_PXLW_IRIS)
+	/*
+	 * Iris5 sends its OCP register reads through mipi_dsi_host_ops.transfer,
+	 * which only carries a struct mipi_dsi_msg. Infer the read from the
+	 * receive buffer, as the msm-5.10 driver does, so the command is sent
+	 * with a BTA instead of as a write. Do it before the transfer flags are
+	 * set so that prepare and post-transfer handle it as a read.
+	 */
+	if (iris_is_chip_supported() && cmd->msg.rx_buf && cmd->msg.rx_len)
+		cmd->ctrl_flags |= DSI_CTRL_CMD_READ;
+#endif
+
 	dsi_display_set_cmd_tx_ctrl_flags(display, cmd);
 
 	if (cmd->ctrl_flags & DSI_CTRL_CMD_BROADCAST) {
@@ -3563,6 +3575,9 @@ int dsi_host_transfer_sub(struct mipi_dsi_host *host, struct dsi_cmd_desc *cmd)
 		}
 
 		rc = dsi_ctrl_cmd_transfer(display->ctrl[idx].ctrl, cmd);
+		/* A read returns the number of bytes received. */
+		if ((cmd->ctrl_flags & DSI_CTRL_CMD_READ) && rc > 0)
+			rc = 0;
 		if (rc)
 			DSI_ERR("[%s] cmd transfer failed, rc=%d\n", display->name, rc);
 
