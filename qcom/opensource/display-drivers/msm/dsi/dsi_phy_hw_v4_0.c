@@ -11,6 +11,9 @@
 #include "dsi_defs.h"
 #include "dsi_phy_hw.h"
 #include "dsi_catalog.h"
+#ifdef OPLUS_FEATURE_DISPLAY
+#include "dsi_display.h"
+#endif
 
 #define DSIPHY_CMN_REVISION_ID0						0x000
 #define DSIPHY_CMN_REVISION_ID1						0x004
@@ -359,6 +362,11 @@ static void dsi_phy_hw_dphy_enable(struct dsi_phy_hw *phy,
 			    struct dsi_phy_cfg *cfg)
 {
 	struct dsi_phy_per_lane_cfgs *timing = &cfg->timing;
+#ifdef OPLUS_FEATURE_DISPLAY
+	struct dsi_display *display = get_main_display();
+	const char *panel_name = (display && display->panel) ?
+				 display->panel->name : NULL;
+#endif
 	u32 data;
 	u32 minor_ver = 0;
 	bool less_than_1500_mhz = false;
@@ -428,6 +436,24 @@ static void dsi_phy_hw_dphy_enable(struct dsi_phy_hw *phy,
 
 	/* Configure PHY lane swap */
 	dsi_phy_hw_v4_0_lane_swap_config(phy, &cfg->lane_map);
+#ifdef OPLUS_FEATURE_DISPLAY
+	/* HS TX strength and LDO level tuned by OPlus for the senna panels */
+	if (panel_name &&
+	    (!strcmp(panel_name, "tianma nt37705 dsc cmd mode panel") ||
+	     !strcmp(panel_name, "senna ab575 04id tm nt37705 dsc cmd mode panel") ||
+	     !strcmp(panel_name, "senna ab575 tm nt37705 dsc cmd mode panel"))) {
+		glbl_str_swi_cal_sel_ctrl = 0x01;
+		glbl_hstx_str_ctrl_0 = 0xFF;
+		vreg_ctrl_0 = 0x47;
+	}
+
+	if (panel_name &&
+	    !strcmp(panel_name, "senna22623 ab575 tm nt37705 dsc cmd mode panel")) {
+		glbl_str_swi_cal_sel_ctrl = 0x01;
+		glbl_hstx_str_ctrl_0 = 0xBB;
+		vreg_ctrl_0 = 0x45;
+	}
+#endif
 
 	/* Enable LDO */
 	DSI_W32(phy, DSIPHY_CMN_VREG_CTRL_0, vreg_ctrl_0);
