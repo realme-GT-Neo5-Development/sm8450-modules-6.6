@@ -6076,11 +6076,12 @@ int sde_encoder_wait_for_event(struct drm_encoder *drm_enc,
 		}
 	}
 
-	return ret;
 #if defined(CONFIG_PXLW_IRIS) || defined(CONFIG_PXLW_SOFT_IRIS)
 	iris_sde_encoder_wait_for_event(sde_enc->num_phys_encs,
 			sde_enc->phys_encs[0], event);
 #endif
+
+	return ret;
 }
 
 void sde_encoder_helper_get_jitter_bounds_ns(u32 frame_rate,
