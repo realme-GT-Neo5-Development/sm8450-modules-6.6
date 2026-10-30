@@ -1336,6 +1336,19 @@ int iris_exit_abyp(bool one_wired)
 {
 	int i = 0;
 	int abyp_status_gpio;
+	struct dsi_display *display = iris_get_cfg()->display;
+
+	/*
+	 * The Iris5 MIPI RX D-PHY reports ready (bit 4 of the D-PHY interface
+	 * control register) only when the host lanes are out of ULPS. On an
+	 * idle command-mode panel with ULPS enabled the lanes are in ULPS at
+	 * this point and the exit fails unless a frame or the ESD check happens
+	 * to wake the link. Hold a DSI clock vote, which takes the link out of
+	 * ULPS, for the whole exit sequence, as the MIPI command path does.
+	 */
+	if (display)
+		dsi_display_clk_ctrl(display->dsi_clk_handle,
+				DSI_ALL_CLKS, DSI_CLK_ON);
 
 	_iris_dphy_itf_check(false);
 	/* try to exit abyp */
@@ -1356,6 +1369,10 @@ int iris_exit_abyp(bool one_wired)
 			break;
 		usleep_range(3500, 3501);
 	}
+
+	if (display)
+		dsi_display_clk_ctrl(display->dsi_clk_handle,
+				DSI_ALL_CLKS, DSI_CLK_OFF);
 
 	return abyp_status_gpio;
 }
